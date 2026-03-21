@@ -1,0 +1,832 @@
+openapi: 3.1.0
+info:
+  title: On-Go Raw Session Ingest API
+  version: 0.1.0
+  description: |
+    Контракт загрузки raw session package из capture-клиента в backend.
+
+    Цели C1:
+    1. Зафиксировать стабильный HTTP lifecycle ingest.
+    2. Зафиксировать обязательные поля manifest и artifact metadata.
+    3. Стабилизировать статусы ingest для следующего шага C2 (Postgres + MinIO/S3).
+servers:
+  - url: https://api.on-go.local
+tags:
+  - name: RawIngest
+    description: Загрузка и контроль состояния raw sessions
+security:
+  - BearerAuth: []
+paths:
+  /v1/raw-sessions:
+    post:
+      tags: [RawIngest]
+      operationId: createRawSessionIngest
+      summary: Зарегистрировать raw session ingest и получить upload targets
+      description: |
+        Создает ingest-запись и сохраняет нормализованные metadata (subject/session/devices/segments/streams).
+        Возвращает upload targets для файлов raw package.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRawSessionIngestRequest'
+      responses:
+        '201':
+          description: Ingest-запись создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRawSessionIngestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /v1/raw-sessions/{session_id}:
+    get:
+      tags: [RawIngest]
+      operationId: getRawSessionIngestState
+      summary: Получить текущее состояние ingest-сессии
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+      responses:
+        '200':
+          description: Текущее состояние ingest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RawSessionIngestState'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/raw-sessions/{session_id}/artifacts/presign:
+    post:
+      tags: [RawIngest]
+      operationId: presignArtifacts
+      summary: Выпустить новые upload targets для pending/failed artifacts
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PresignArtifactsRequest'
+      responses:
+        '200':
+          description: Upload targets обновлены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PresignArtifactsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/raw-sessions/{session_id}/artifacts/complete:
+    post:
+      tags: [RawIngest]
+      operationId: completeArtifactsBatch
+      summary: Подтвердить загрузку батча artifacts
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteArtifactsRequest'
+      responses:
+        '200':
+          description: Обновлен статус upload по artifacts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompleteArtifactsResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+  /v1/raw-sessions/{session_id}/finalize:
+    post:
+      tags: [RawIngest]
+      operationId: finalizeRawSessionIngest
+      summary: Закрыть upload-фазу и запустить итоговую валидацию пакета
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinalizeRawSessionRequest'
+      responses:
+        '200':
+          description: Ingest переведен в validating/ingested/failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalizeRawSessionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    SessionIdPath:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 3
+        maxLength: 128
+      description: Идентификатор сессии из raw package
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+      description: Ключ идемпотентности для безопасных retry
+
+  responses:
+    BadRequest:
+      description: Некорректный формат запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Конфликт состояния ingest
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Сущность не найдена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationFailed:
+      description: Валидация данных не пройдена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    CreateRawSessionIngestRequest:
+      type: object
+      required:
+        - session
+        - subject
+        - devices
+        - segments
+        - streams
+        - artifacts
+      properties:
+        session:
+          $ref: '#/components/schemas/SessionManifestInput'
+        subject:
+          $ref: '#/components/schemas/SubjectManifestInput'
+        devices:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/DeviceManifestInput'
+        segments:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SegmentManifestInput'
+        streams:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/StreamManifestInput'
+        artifacts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ArtifactDescriptorInput'
+        source:
+          type: object
+          additionalProperties: false
+          properties:
+            actor_type:
+              type: string
+              enum: [device, operator, service]
+            actor_id:
+              type: string
+            client_version:
+              type: string
+
+    CreateRawSessionIngestResponse:
+      type: object
+      required:
+        - session_id
+        - ingest_status
+        - expected_artifact_count
+        - upload_targets
+      properties:
+        session_id:
+          type: string
+        ingest_status:
+          $ref: '#/components/schemas/IngestStatus'
+        created_at_utc:
+          type: string
+          format: date-time
+        expected_artifact_count:
+          type: integer
+          minimum: 1
+        upload_targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactUploadTarget'
+        warnings:
+          type: array
+          items:
+            type: string
+
+    PresignArtifactsRequest:
+      type: object
+      required:
+        - artifact_paths
+      properties:
+        artifact_paths:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 3
+            maxLength: 1024
+
+    PresignArtifactsResponse:
+      type: object
+      required:
+        - session_id
+        - upload_targets
+      properties:
+        session_id:
+          type: string
+        upload_targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactUploadTarget'
+
+    CompleteArtifactsRequest:
+      type: object
+      required:
+        - completed_artifacts
+      properties:
+        completed_artifacts:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CompletedArtifactInput'
+
+    CompleteArtifactsResponse:
+      type: object
+      required:
+        - session_id
+        - ingest_status
+        - uploaded_artifact_count
+        - pending_artifact_count
+      properties:
+        session_id:
+          type: string
+        ingest_status:
+          $ref: '#/components/schemas/IngestStatus'
+        uploaded_artifact_count:
+          type: integer
+          minimum: 0
+        pending_artifact_count:
+          type: integer
+          minimum: 0
+        failed_artifact_count:
+          type: integer
+          minimum: 0
+
+    FinalizeRawSessionRequest:
+      type: object
+      required:
+        - package_checksum_sha256
+        - checksum_file_path
+      properties:
+        package_checksum_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        checksum_file_path:
+          type: string
+          minLength: 3
+          maxLength: 1024
+          example: checksums/SHA256SUMS
+        client_observed:
+          type: object
+          additionalProperties: false
+          properties:
+            uploaded_artifact_count:
+              type: integer
+              minimum: 0
+            stream_count:
+              type: integer
+              minimum: 0
+            event_count:
+              type: integer
+              minimum: 0
+
+    FinalizeRawSessionResponse:
+      type: object
+      required:
+        - session_id
+        - ingest_status
+        - validation_summary
+      properties:
+        session_id:
+          type: string
+        ingest_status:
+          $ref: '#/components/schemas/IngestStatus'
+        finalized_at_utc:
+          type: string
+          format: date-time
+        validation_summary:
+          $ref: '#/components/schemas/ValidationSummary'
+
+    RawSessionIngestState:
+      type: object
+      required:
+        - session_id
+        - subject_id
+        - session_status
+        - ingest_status
+        - expected_artifact_count
+        - uploaded_artifact_count
+      properties:
+        session_id:
+          type: string
+        subject_id:
+          type: string
+        session_status:
+          type: string
+          enum: [completed, partial, failed, exported]
+        ingest_status:
+          $ref: '#/components/schemas/IngestStatus'
+        schema_version:
+          type: string
+        protocol_version:
+          type: string
+        storage_root_prefix:
+          type: string
+        checksum_file_path:
+          type: string
+        package_checksum_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        expected_artifact_count:
+          type: integer
+          minimum: 0
+        uploaded_artifact_count:
+          type: integer
+          minimum: 0
+        verified_artifact_count:
+          type: integer
+          minimum: 0
+        missing_required_artifacts:
+          type: array
+          items:
+            type: string
+        created_at_utc:
+          type: string
+          format: date-time
+        updated_at_utc:
+          type: string
+          format: date-time
+        ingest_finalized_at_utc:
+          type: string
+          format: date-time
+        ingested_at_utc:
+          type: string
+          format: date-time
+        last_error:
+          $ref: '#/components/schemas/IngestError'
+
+    SessionManifestInput:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - subject_id
+        - schema_version
+        - protocol_version
+        - session_type
+        - status
+        - started_at_utc
+        - ended_at_utc
+        - timezone
+        - capture_app_version
+      properties:
+        session_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        subject_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        schema_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        protocol_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        session_type:
+          type: string
+          minLength: 1
+          maxLength: 64
+        status:
+          type: string
+          enum: [completed, partial, failed, exported]
+        started_at_utc:
+          type: string
+          format: date-time
+        ended_at_utc:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+        coordinator_device_id:
+          type: string
+          maxLength: 128
+        capture_app_version:
+          type: string
+          maxLength: 64
+        operator_mode:
+          type: string
+          maxLength: 64
+        session_environment:
+          type: object
+          additionalProperties:
+            type: string
+        notes:
+          type: string
+          maxLength: 4000
+        planned_segment_count:
+          type: integer
+          minimum: 0
+        observed_segment_count:
+          type: integer
+          minimum: 0
+        stream_count:
+          type: integer
+          minimum: 0
+        export_completed_at_utc:
+          type: string
+          format: date-time
+
+    SubjectManifestInput:
+      type: object
+      additionalProperties: false
+      required:
+        - subject_id
+        - consent_version
+      properties:
+        subject_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        cohort:
+          type: string
+          maxLength: 64
+        study_group:
+          type: string
+          maxLength: 64
+        sex:
+          type: string
+          maxLength: 32
+        age_range:
+          type: string
+          maxLength: 32
+        consent_version:
+          type: string
+          maxLength: 64
+        baseline_notes:
+          type: string
+          maxLength: 4000
+
+    DeviceManifestInput:
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - device_role
+        - manufacturer
+        - model
+        - source_name
+      properties:
+        device_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        device_role:
+          type: string
+          enum: [coordinator_phone, polar_h10, apple_watch]
+        manufacturer:
+          type: string
+          maxLength: 64
+        model:
+          type: string
+          maxLength: 64
+        firmware_version:
+          type: string
+          maxLength: 64
+        source_name:
+          type: string
+          maxLength: 128
+        connection_started_at_utc:
+          type: string
+          format: date-time
+        connection_ended_at_utc:
+          type: string
+          format: date-time
+
+    SegmentManifestInput:
+      type: object
+      additionalProperties: false
+      required:
+        - segment_id
+        - name
+        - order_index
+        - started_at_utc
+        - ended_at_utc
+        - planned
+      properties:
+        segment_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        name:
+          type: string
+          maxLength: 64
+        order_index:
+          type: integer
+          minimum: 0
+        started_at_utc:
+          type: string
+          format: date-time
+        ended_at_utc:
+          type: string
+          format: date-time
+        planned:
+          type: boolean
+        notes:
+          type: string
+          maxLength: 4000
+
+    StreamManifestInput:
+      type: object
+      additionalProperties: false
+      required:
+        - stream_id
+        - device_id
+        - stream_name
+        - stream_kind
+        - sample_count
+        - file_ref
+        - checksum_sha256
+      properties:
+        stream_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        device_id:
+          type: string
+          minLength: 3
+          maxLength: 128
+        stream_name:
+          $ref: '#/components/schemas/StreamName'
+        stream_kind:
+          type: string
+          maxLength: 64
+        unit_schema:
+          type: object
+          additionalProperties: true
+        sample_count:
+          type: integer
+          minimum: 0
+        started_at_utc:
+          type: string
+          format: date-time
+        ended_at_utc:
+          type: string
+          format: date-time
+        file_ref:
+          type: string
+          minLength: 3
+          maxLength: 1024
+        checksum_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+        missing_intervals:
+          type: array
+          items:
+            $ref: '#/components/schemas/MissingInterval'
+
+    ArtifactDescriptorInput:
+      type: object
+      additionalProperties: false
+      required:
+        - artifact_path
+        - artifact_role
+        - content_type
+        - byte_size
+        - checksum_sha256
+      properties:
+        artifact_path:
+          type: string
+          minLength: 3
+          maxLength: 1024
+          description: Относительный путь внутри raw session package
+        artifact_role:
+          type: string
+          enum:
+            - manifest_session
+            - manifest_subject
+            - manifest_devices
+            - manifest_streams
+            - manifest_segments
+            - stream_metadata
+            - stream_samples
+            - session_events
+            - self_report
+            - quality_report
+            - checksums
+            - other
+        stream_name:
+          $ref: '#/components/schemas/StreamName'
+        content_type:
+          type: string
+          maxLength: 128
+        byte_size:
+          type: integer
+          minimum: 0
+        checksum_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+
+    CompletedArtifactInput:
+      type: object
+      additionalProperties: false
+      required:
+        - artifact_path
+        - byte_size
+        - checksum_sha256
+      properties:
+        artifact_id:
+          type: string
+          format: uuid
+        artifact_path:
+          type: string
+          minLength: 3
+          maxLength: 1024
+        storage_etag:
+          type: string
+          maxLength: 128
+        byte_size:
+          type: integer
+          minimum: 0
+        checksum_sha256:
+          $ref: '#/components/schemas/Sha256Hex'
+
+    ArtifactUploadTarget:
+      type: object
+      required:
+        - artifact_id
+        - artifact_path
+        - artifact_role
+        - object_key
+        - upload_method
+        - upload_url
+        - expires_at_utc
+      properties:
+        artifact_id:
+          type: string
+          format: uuid
+        artifact_path:
+          type: string
+        artifact_role:
+          type: string
+        object_key:
+          type: string
+        upload_method:
+          type: string
+          enum: [PUT]
+        upload_url:
+          type: string
+          format: uri
+        required_headers:
+          type: object
+          additionalProperties:
+            type: string
+        expires_at_utc:
+          type: string
+          format: date-time
+
+    ValidationSummary:
+      type: object
+      required:
+        - required_artifacts_ok
+        - checksum_ok
+        - stream_manifest_ok
+      properties:
+        required_artifacts_ok:
+          type: boolean
+        checksum_ok:
+          type: boolean
+        stream_manifest_ok:
+          type: boolean
+        warning_count:
+          type: integer
+          minimum: 0
+        error_count:
+          type: integer
+          minimum: 0
+
+    IngestError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/IngestError'
+
+    MissingInterval:
+      type: object
+      required:
+        - started_at_utc
+        - ended_at_utc
+      properties:
+        started_at_utc:
+          type: string
+          format: date-time
+        ended_at_utc:
+          type: string
+          format: date-time
+
+    IngestStatus:
+      type: string
+      enum: [accepted, uploading, uploaded, validating, ingested, failed, cancelled]
+
+    StreamName:
+      type: string
+      enum:
+        - polar_ecg
+        - polar_rr
+        - polar_hr
+        - polar_acc
+        - watch_heart_rate
+        - watch_accelerometer
+        - watch_gyroscope
+        - watch_activity_context
+        - watch_hrv
+
+    Sha256Hex:
+      type: string
+      pattern: '^[0-9a-f]{64}$'

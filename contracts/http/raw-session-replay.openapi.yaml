@@ -1,0 +1,335 @@
+openapi: 3.1.0
+info:
+  title: On-Go Raw Session Replay API
+  version: 0.1.0
+  description: |
+    Replay API для чтения replay manifest и выдачи синхронизированных
+    replay-окон поверх raw session artifacts, сохраненных в Postgres + MinIO/S3.
+servers:
+  - url: http://localhost:8090
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: replayHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                required: [status]
+  /v1/replay/sessions/{session_id}/manifest:
+    get:
+      summary: Get replay manifest for a raw session
+      operationId: getReplayManifest
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Replay manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayManifestResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Session is not ready for replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/replay/sessions/{session_id}/windows:
+    post:
+      summary: Build replay window for selected streams
+      operationId: getReplayWindow
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayWindowRequest"
+      responses:
+        "200":
+          description: Replay window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayWindowResponse"
+        "404":
+          description: Session or replay object not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Session is not ready for replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    ReplayMode:
+      type: string
+      enum: [realtime, accelerated]
+    IngestStatus:
+      type: string
+      enum: [accepted, uploading, uploaded, validating, ingested, failed, cancelled]
+    StreamName:
+      type: string
+      enum:
+        - polar_ecg
+        - polar_rr
+        - polar_hr
+        - polar_acc
+        - watch_heart_rate
+        - watch_accelerometer
+        - watch_gyroscope
+        - watch_activity_context
+        - watch_hrv
+    ReplaySegment:
+      type: object
+      properties:
+        segment_id: { type: string }
+        name: { type: string }
+        order_index: { type: integer, minimum: 0 }
+        started_at_utc: { type: string, format: date-time }
+        ended_at_utc: { type: string, format: date-time }
+        planned: { type: boolean }
+        notes: { type: string, nullable: true }
+      required:
+        - segment_id
+        - name
+        - order_index
+        - started_at_utc
+        - ended_at_utc
+        - planned
+    ReplayStreamDescriptor:
+      type: object
+      properties:
+        stream_id: { type: string }
+        device_id: { type: string }
+        stream_name:
+          $ref: "#/components/schemas/StreamName"
+        stream_kind: { type: string }
+        sample_count: { type: integer, minimum: 0 }
+        started_at_utc: { type: string, format: date-time, nullable: true }
+        ended_at_utc: { type: string, format: date-time, nullable: true }
+        file_ref: { type: string }
+        sample_object_key: { type: string, nullable: true }
+        sample_content_type: { type: string, nullable: true }
+        sample_upload_status: { type: string, nullable: true }
+        checksum_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        metadata_artifact_path: { type: string, nullable: true }
+        metadata_object_key: { type: string, nullable: true }
+        available_for_replay: { type: boolean }
+        unavailability_reason: { type: string, nullable: true }
+      required:
+        - stream_id
+        - device_id
+        - stream_name
+        - stream_kind
+        - sample_count
+        - file_ref
+        - checksum_sha256
+        - available_for_replay
+    ReplayManifestResponse:
+      type: object
+      properties:
+        replay_manifest_version: { type: string, example: 1.0.0 }
+        session_id: { type: string }
+        subject_id: { type: string }
+        ingest_status:
+          $ref: "#/components/schemas/IngestStatus"
+        storage_root_prefix: { type: string }
+        started_at_utc: { type: string, format: date-time }
+        ended_at_utc: { type: string, format: date-time }
+        timezone: { type: string }
+        duration_ms: { type: integer, minimum: 0 }
+        stream_count: { type: integer, minimum: 0 }
+        segments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplaySegment"
+        streams:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayStreamDescriptor"
+        warnings:
+          type: array
+          items: { type: string }
+      required:
+        - replay_manifest_version
+        - session_id
+        - subject_id
+        - ingest_status
+        - storage_root_prefix
+        - started_at_utc
+        - ended_at_utc
+        - timezone
+        - duration_ms
+        - stream_count
+        - segments
+        - streams
+        - warnings
+    ReplayWindowRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          $ref: "#/components/schemas/ReplayMode"
+        speed_multiplier:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 200
+          default: 1
+        from_offset_ms:
+          type: integer
+          minimum: 0
+          default: 0
+        window_ms:
+          type: integer
+          minimum: 100
+          maximum: 600000
+          default: 5000
+        stream_names:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreamName"
+        include_events:
+          type: boolean
+          default: true
+        max_samples_per_stream:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 2000
+      required: []
+    ReplaySample:
+      type: object
+      properties:
+        stream_name:
+          $ref: "#/components/schemas/StreamName"
+        stream_id: { type: string }
+        device_id: { type: string }
+        sample_index: { type: integer, nullable: true }
+        offset_ms: { type: integer, minimum: 0 }
+        timestamp_utc: { type: string, format: date-time, nullable: true }
+        replay_at_offset_ms: { type: integer, minimum: 0 }
+        values:
+          type: object
+          additionalProperties: true
+      required:
+        - stream_name
+        - stream_id
+        - device_id
+        - offset_ms
+        - replay_at_offset_ms
+        - values
+    ReplayEvent:
+      type: object
+      properties:
+        event_id: { type: string }
+        event_type: { type: string }
+        source: { type: string }
+        occurred_at_utc: { type: string, format: date-time }
+        offset_ms: { type: integer, minimum: 0 }
+        replay_at_offset_ms: { type: integer, minimum: 0 }
+        payload:
+          type: object
+          additionalProperties: true
+      required:
+        - event_id
+        - event_type
+        - source
+        - occurred_at_utc
+        - offset_ms
+        - replay_at_offset_ms
+        - payload
+    ReplayWindowResponse:
+      type: object
+      properties:
+        session_id: { type: string }
+        mode:
+          $ref: "#/components/schemas/ReplayMode"
+        speed_multiplier:
+          type: number
+          exclusiveMinimum: 0
+        from_offset_ms: { type: integer, minimum: 0 }
+        to_offset_ms: { type: integer, minimum: 0 }
+        next_offset_ms: { type: integer, minimum: 0 }
+        stream_names:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreamName"
+        sample_count: { type: integer, minimum: 0 }
+        event_count: { type: integer, minimum: 0 }
+        samples:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplaySample"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayEvent"
+        warnings:
+          type: array
+          items: { type: string }
+      required:
+        - session_id
+        - mode
+        - speed_multiplier
+        - from_offset_ms
+        - to_offset_ms
+        - next_offset_ms
+        - stream_names
+        - sample_count
+        - event_count
+        - samples
+        - events
+        - warnings
+    ErrorPayload:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+      required: [code, message]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorPayload"
+      required: [error]

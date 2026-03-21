@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "on-go-ingest-api"
+version = "0.1.0"
+description = "Runtime ingest API for raw session storage in Postgres + MinIO/S3"
+requires-python = ">=3.9"
+dependencies = [
+  "boto3>=1.35.0,<2.0.0",
+  "eval_type_backport>=0.2.0,<1.0.0",
+  "fastapi>=0.116.0,<1.0.0",
+  "psycopg[binary]>=3.2.0,<4.0.0",
+  "uvicorn>=0.30.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0,<1.0.0",
+  "pytest>=8.2.0,<9.0.0",
+]
+
+[project.scripts]
+ingest-api = "ingest_api.main:run"
+ingest-api-migrate = "ingest_api.migrate:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
