@@ -49,11 +49,46 @@ sudo mkdir -p /var/www/certbot
 ```bash
 sudo cp infra/nginx-host/bootstrap-http.conf /etc/nginx/sites-available/on-go
 sudo ln -sf /etc/nginx/sites-available/on-go /etc/nginx/sites-enabled/on-go
-sudo nginx -t && sudo systemctl reload nginx
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl enable --now nginx
+```
+
+Use a real address for `-m` (or add `--register-unsafely-without-email`). Non-interactive example:
+
+```bash
 sudo certbot certonly --webroot -w /var/www/certbot \
-  --agree-tos --no-eff-email -m YOUR_EMAIL \
+  --agree-tos --no-eff-email -m you@example.com \
   -d api.kegazani.ru -d s3.kegazani.ru
 ```
+
+If validation fails with `Fetching https://...` and `tls: internal error`, the validator got an **HTTP→HTTPS redirect** and then TLS on **443** failed. HTTP-01 must succeed on **plain port 80** with **no** redirect for `/.well-known/acme-challenge/`.
+
+Checklist:
+
+- **Who owns port 80?** `sudo ss -tlnp | grep ':80 '` — if you see `docker-proxy`, a container is bound to `:80` and **host nginx is not** what the internet hits. Stop that container or change it to `127.0.0.1:8080:80` (or similar). Only one listener can bind `0.0.0.0:80` on the VM.
+- **No second nginx vhost** redirecting first: `sudo nginx -T 2>/dev/null | grep -E 'listen 80|server_name|return 301|acme-challenge'`. Keep only [bootstrap-http.conf](../../infra/nginx-host/bootstrap-http.conf) enabled until the cert exists; remove `default` and any other `sites-enabled` entries that use `return 301 https`.
+- **From your laptop** (not only localhost): `curl -4sI http://api.kegazani.ru/.well-known/acme-challenge/x` — must **not** show `Location: https://...`. A `404` from nginx is fine (no file yet); a `301`/`302` to `https` is not.
+
+If **80** is owned by Docker and you cannot free it quickly, use **standalone** (stop everything on 80, including Docker publish) or **DNS-01** (no HTTP):
+
+```bash
+sudo certbot certonly --manual --preferred-challenges dns \
+  --agree-tos --no-eff-email -m you@example.com \
+  -d api.kegazani.ru -d s3.kegazani.ru
+```
+
+Follow the prompts to create the TXT records at your DNS provider, then continue.
+
+If port **80** is free of redirects but webroot is awkward, stop nginx and use standalone once:
+
+```bash
+sudo systemctl stop nginx
+sudo certbot certonly --standalone --agree-tos --no-eff-email -m you@example.com \
+  -d api.kegazani.ru -d s3.kegazani.ru
+sudo systemctl start nginx
+```
+
+Then install [infra/nginx-host/on-go.conf](../../infra/nginx-host/on-go.conf) as below (HTTPS will work after certs exist).
 
 4. Replace the site config with TLS + reverse proxy (edit `server_name` and `ssl_certificate` paths if you use different hostnames; certificate directory name must match the first `-d` you used with certbot):
 
