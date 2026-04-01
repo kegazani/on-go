@@ -221,11 +221,11 @@ WHERE session_id = '<session_id>';
 - Запросить `GET /v1/raw-sessions/<session_id>` и смотреть `last_error`, `missing_required_artifacts`.
 - Возможные причины: несовпадение checksums, отсутствующий artifact, неверный manifest.
 
-### Симулятор без устройств
+### Симулятор и replay-only
 
-- Polar и Watch требуют реальное оборудование.
-- В симуляторе можно проверить только: prepare, start (simulated), stop, локальный package.
-- Upload при `ON_GO_INGEST_BASE_URL=http://localhost:8080` в симуляторе работает.
+- Polar и Watch требуют реальное оборудование, поэтому capture на симуляторе не поддерживается.
+- Для non-live проверки используйте replay-service и записанные sessions, а не simulated capture.
+- Upload при `ON_GO_INGEST_BASE_URL=http://localhost:8080` можно использовать только для backend smoke checks без capture.
 
 ## Связанные документы
 

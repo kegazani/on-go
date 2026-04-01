@@ -2,7 +2,7 @@
 
 Сервис принимает `raw session package`, сохраняет metadata в `Postgres` и управляет artifact upload lifecycle в `MinIO/S3`.
 
-## Реализация C2
+## Реализация C2-C4
 
 Реализованные endpoint-ы:
 
@@ -20,6 +20,10 @@
 3. перевод статусов `pending -> uploaded -> verified`;
 4. finalize-проверки и перевод ingest в `ingested` или `failed`;
 5. idempotency для create/complete/finalize через `Idempotency-Key`.
+6. full-package checksum policy в `finalize`:
+   - канонический `checksum_file_path` (`checksums/SHA256SUMS`);
+   - валидация `SHA256SUMS` формата и покрытия артефактов;
+   - сверка `package_checksum_sha256` и checksum-манифеста с ingest artifacts.
 
 ## Локальный запуск
 
@@ -82,3 +86,5 @@ services/ingest-api/
 1. `contracts/http/raw-session-ingest.openapi.yaml`
 2. `docs/backend/raw-ingest-c1.md`
 3. `docs/backend/raw-ingest-c2.md`
+4. `docs/backend/raw-ingest-c3.md`
+5. `docs/backend/raw-ingest-c4.md`

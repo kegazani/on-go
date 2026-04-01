@@ -3,15 +3,17 @@ from __future__ import annotations
 import csv
 import math
 import re
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from io import StringIO
-from statistics import median
-from typing import Any, Iterable
+from statistics import median, pstdev
+from typing import Any, Iterable, Literal
 
 from signal_processing_worker.db import Database
 from signal_processing_worker.errors import ConflictError, ValidationError
 from signal_processing_worker.models import (
     CleanSample,
+    FeatureWindow,
     OffsetInterval,
     PreprocessingRunResult,
     ProcessedStream,
@@ -19,6 +21,7 @@ from signal_processing_worker.models import (
     QualityStatus,
     RawSample,
     RawStreamDescriptor,
+    StreamFeatureSummary,
     StreamQualitySummary,
     StreamName,
 )
@@ -43,7 +46,11 @@ DEFAULT_INTERVAL_MS: dict[StreamName, int] = {
 STREAM_VALUE_LIMITS: dict[StreamName, dict[str, tuple[float, float]]] = {
     "polar_ecg": {"voltage_uv": (-20_000.0, 20_000.0)},
     "polar_rr": {"rr_ms": (250.0, 2_500.0)},
-    "polar_hr": {"hr_bpm": (25.0, 240.0)},
+    "polar_hr": {
+        "hr_bpm": (25.0, 240.0),
+        "contact": (0.0, 1.0),
+        "contact_supported": (0.0, 1.0),
+    },
     "polar_acc": {
         "acc_x_mg": (-32_000.0, 32_000.0),
         "acc_y_mg": (-32_000.0, 32_000.0),
@@ -67,6 +74,52 @@ STREAM_VALUE_LIMITS: dict[StreamName, dict[str, tuple[float, float]]] = {
         "rmssd_ms": (5.0, 500.0),
     },
 }
+
+DEFAULT_WINDOW_CONFIG_MS: dict[StreamName, tuple[int, int]] = {
+    "polar_ecg": (5000, 2500),
+    "polar_rr": (30000, 10000),
+    "polar_hr": (15000, 5000),
+    "polar_acc": (5000, 2500),
+    "watch_heart_rate": (30000, 10000),
+    "watch_accelerometer": (5000, 2500),
+    "watch_gyroscope": (5000, 2500),
+    "watch_activity_context": (60000, 15000),
+    "watch_hrv": (120000, 30000),
+}
+
+FEATURE_FAMILY_SELECTORS: dict[str, tuple[str, ...]] = {
+    "polar_cardio_core": (
+        "hr_bpm__mean",
+        "hr_bpm__std",
+        "rr_like__mean_rr",
+        "rr_like__median_rr",
+        "rr_like__sdnn",
+        "rr_like__rmssd",
+        "rr_like__mean_hr",
+        "rr_like__nn50",
+        "rr_like__pnn50",
+        "ecg_sample_count",
+        "ecg_coverage_ratio",
+        "ecg_peak_success_ratio",
+        "ecg_noise_ratio",
+    ),
+    "polar_cardio_extended": (
+        "rr_like__*",
+        "ecg_*",
+    ),
+    "watch_motion_core": (
+        "motion_artifact_ratio",
+        "acc_mag__*",
+        "gyro_mag__*",
+        "acc_x_g__*",
+        "acc_y_g__*",
+        "acc_z_g__*",
+        "activity_label__mode",
+        "confidence__mean",
+    ),
+}
+
+QUALITY_GATE_POLICY_VERSION = "p2-offline-v1"
 
 
 class SignalProcessingService:
@@ -145,11 +198,19 @@ class SignalProcessingService:
             if self._persist_outputs:
                 clean_key = self._build_stream_clean_samples_key(session_id, pipeline_token, descriptor.stream_name)
                 quality_key = self._build_stream_quality_key(session_id, pipeline_token, descriptor.stream_name)
+                features_key = self._build_stream_features_key(session_id, pipeline_token, descriptor.stream_name)
 
                 clean_csv = self._render_clean_samples_csv(processed_stream)
+                feature_csv = self._render_feature_windows_csv(processed_stream)
                 self._storage.write_clean_text(
                     object_key=clean_key,
                     text=clean_csv,
+                    content_type="text/csv",
+                    gzip_compress=True,
+                )
+                self._storage.write_clean_text(
+                    object_key=features_key,
+                    text=feature_csv,
                     content_type="text/csv",
                     gzip_compress=True,
                 )
@@ -160,6 +221,7 @@ class SignalProcessingService:
 
                 processed_stream.clean_samples_object_key = clean_key
                 processed_stream.quality_report_object_key = quality_key
+                processed_stream.features_object_key = features_key
 
             streams.append(processed_stream)
 
@@ -350,6 +412,14 @@ class SignalProcessingService:
             clean_samples=clean_samples,
             stream_name=descriptor.stream_name,
         )
+        feature_windows, feature_summary, gate_metrics = self._extract_stream_features(
+            stream_name=descriptor.stream_name,
+            clean_samples=clean_samples,
+        )
+        if gate_metrics["dropped_windows"] > 0:
+            quality_warnings.append(
+                f"quality_gate dropped {gate_metrics['dropped_windows']} feature windows ({QUALITY_GATE_POLICY_VERSION})"
+            )
 
         if raw_samples and not clean_samples:
             quality_warnings.append("all samples were dropped during cleaning")
@@ -364,6 +434,11 @@ class SignalProcessingService:
             packet_loss_estimated_samples=packet_loss,
             motion_artifact_count=len(motion_intervals),
             noisy_sample_count=len(noisy_intervals),
+            rr_quality_gate_status=gate_metrics["rr_quality_gate_status"],
+            ecg_quality_gate_status=gate_metrics["ecg_quality_gate_status"],
+            quality_gate_policy=QUALITY_GATE_POLICY_VERSION,
+            quality_gate_marked_window_count=gate_metrics["marked_windows"],
+            quality_gate_dropped_window_count=gate_metrics["dropped_windows"],
             gap_intervals=gap_intervals,
             motion_artifact_intervals=motion_intervals,
             noisy_intervals=noisy_intervals,
@@ -379,6 +454,8 @@ class SignalProcessingService:
             alignment_delta_ms=alignment_delta_ms,
             quality=quality,
             clean_samples=clean_samples,
+            feature_windows=feature_windows,
+            feature_summary=feature_summary,
             warnings=quality_warnings,
         )
 
@@ -590,6 +667,10 @@ class SignalProcessingService:
                         "packet_loss_estimated_samples": stream.quality.packet_loss_estimated_samples,
                         "motion_artifact_count": stream.quality.motion_artifact_count,
                         "noisy_sample_count": stream.quality.noisy_sample_count,
+                        "rr_quality_gate_status": stream.quality.rr_quality_gate_status,
+                        "ecg_quality_gate_status": stream.quality.ecg_quality_gate_status,
+                        "quality_gate_marked_window_count": stream.quality.quality_gate_marked_window_count,
+                        "quality_gate_dropped_window_count": stream.quality.quality_gate_dropped_window_count,
                     },
                 )
             )
@@ -645,11 +726,505 @@ class SignalProcessingService:
 
         return buffer.getvalue()
 
+    def _extract_stream_features(
+        self,
+        stream_name: StreamName,
+        clean_samples: list[CleanSample],
+    ) -> tuple[list[FeatureWindow], StreamFeatureSummary, dict[str, Any]]:
+        window_size_ms, step_size_ms = DEFAULT_WINDOW_CONFIG_MS.get(stream_name, (15000, 5000))
+
+        if not clean_samples:
+            return (
+                [],
+                StreamFeatureSummary(
+                    window_size_ms=window_size_ms,
+                    step_size_ms=step_size_ms,
+                    window_count=0,
+                    covered_duration_ms=0,
+                    feature_names=[],
+                    feature_family_selectors=self._feature_family_selectors_for_summary(),
+                    feature_family_tags=[],
+                    quality_gate_policy=QUALITY_GATE_POLICY_VERSION,
+                    quality_gate_kept_windows=0,
+                    quality_gate_marked_windows=0,
+                    quality_gate_dropped_windows=0,
+                    warnings=["no clean samples available for feature extraction"],
+                ),
+                {
+                    "marked_windows": 0,
+                    "dropped_windows": 0,
+                    "rr_quality_gate_status": "pass",
+                    "ecg_quality_gate_status": "pass",
+                },
+            )
+
+        sorted_samples = sorted(clean_samples, key=lambda sample: sample.aligned_offset_ms)
+        stream_start = sorted_samples[0].aligned_offset_ms
+        stream_end = sorted_samples[-1].aligned_offset_ms
+        covered_duration_ms = max(0, stream_end - stream_start)
+
+        window_start = stream_start
+        right_cursor = 0
+        left_cursor = 0
+        windows: list[FeatureWindow] = []
+        all_feature_names: set[str] = set()
+        all_family_tags: set[str] = set()
+        marked_windows = 0
+        dropped_windows = 0
+        rr_quality_statuses: list[QualityStatus] = []
+        ecg_quality_statuses: list[QualityStatus] = []
+
+        while window_start <= stream_end:
+            window_end = window_start + window_size_ms
+
+            while left_cursor < len(sorted_samples) and sorted_samples[left_cursor].aligned_offset_ms < window_start:
+                left_cursor += 1
+            if right_cursor < left_cursor:
+                right_cursor = left_cursor
+            while right_cursor < len(sorted_samples) and sorted_samples[right_cursor].aligned_offset_ms < window_end:
+                right_cursor += 1
+
+            window_samples = sorted_samples[left_cursor:right_cursor]
+            if window_samples:
+                feature_values = self._compute_window_features(stream_name=stream_name, samples=window_samples)
+                family_tags = self._resolve_feature_family_tags(feature_values.keys())
+                quality_gate_status, quality_gate_action, quality_gate_flags = self._evaluate_window_quality_gate(
+                    stream_name=stream_name,
+                    window_size_ms=window_size_ms,
+                    feature_values=feature_values,
+                )
+                if any(flag.startswith("rr_") for flag in quality_gate_flags):
+                    rr_quality_statuses.append(quality_gate_status)
+                if any(flag.startswith("ecg_") for flag in quality_gate_flags):
+                    ecg_quality_statuses.append(quality_gate_status)
+
+                if quality_gate_action == "drop":
+                    dropped_windows += 1
+                else:
+                    all_feature_names.update(feature_values.keys())
+                    all_family_tags.update(family_tags)
+                    if quality_gate_action == "mark":
+                        marked_windows += 1
+                    windows.append(
+                        FeatureWindow(
+                            window_index=len(windows),
+                            started_offset_ms=window_start,
+                            ended_offset_ms=window_end,
+                            sample_count=len(window_samples),
+                            feature_family_tags=family_tags,
+                            quality_gate_status=quality_gate_status,
+                            quality_gate_action=quality_gate_action,
+                            quality_gate_flags=quality_gate_flags,
+                            values=feature_values,
+                        )
+                    )
+
+            window_start += step_size_ms
+
+        warnings: list[str] = []
+        if dropped_windows > 0:
+            warnings.append(f"quality_gate dropped {dropped_windows} windows")
+
+        return (
+            windows,
+            StreamFeatureSummary(
+                window_size_ms=window_size_ms,
+                step_size_ms=step_size_ms,
+                window_count=len(windows),
+                covered_duration_ms=covered_duration_ms,
+                feature_names=sorted(all_feature_names),
+                feature_family_selectors=self._feature_family_selectors_for_summary(),
+                feature_family_tags=sorted(all_family_tags),
+                quality_gate_policy=QUALITY_GATE_POLICY_VERSION,
+                quality_gate_kept_windows=len(windows) - marked_windows,
+                quality_gate_marked_windows=marked_windows,
+                quality_gate_dropped_windows=dropped_windows,
+                warnings=warnings,
+            ),
+            {
+                "marked_windows": marked_windows,
+                "dropped_windows": dropped_windows,
+                "rr_quality_gate_status": self._merge_quality_status(rr_quality_statuses),
+                "ecg_quality_gate_status": self._merge_quality_status(ecg_quality_statuses),
+            },
+        )
+
+    def _compute_window_features(self, stream_name: StreamName, samples: list[CleanSample]) -> dict[str, Any]:
+        features: dict[str, Any] = {}
+        features["sample_count"] = len(samples)
+        features["window_duration_ms"] = max(
+            0,
+            samples[-1].aligned_offset_ms - samples[0].aligned_offset_ms,
+        )
+        flagged = sum(1 for sample in samples if "motion_artifact" in sample.quality_flags)
+        features["motion_artifact_ratio"] = round(flagged / len(samples), 6) if samples else 0.0
+
+        numeric_by_key: dict[str, list[float]] = {}
+        non_numeric_by_key: dict[str, list[str]] = {}
+
+        for sample in samples:
+            for key, value in sample.values.items():
+                numeric = self._as_float(value)
+                if numeric is not None and math.isfinite(numeric):
+                    numeric_by_key.setdefault(key, []).append(numeric)
+                    continue
+                if value is None:
+                    continue
+                non_numeric_by_key.setdefault(key, []).append(str(value))
+
+        for key, values in numeric_by_key.items():
+            if not values:
+                continue
+            features[f"{key}__mean"] = round(sum(values) / len(values), 6)
+            features[f"{key}__std"] = round(pstdev(values), 6) if len(values) >= 2 else 0.0
+            features[f"{key}__min"] = min(values)
+            features[f"{key}__max"] = max(values)
+            features[f"{key}__last"] = values[-1]
+
+        if stream_name in {"polar_acc", "watch_accelerometer"}:
+            axis = ("acc_x_mg", "acc_y_mg", "acc_z_mg") if stream_name == "polar_acc" else ("acc_x_g", "acc_y_g", "acc_z_g")
+            self._add_vector_magnitude_features(features, samples, axis, prefix="acc_mag")
+        elif stream_name == "watch_gyroscope":
+            axis = ("gyro_x_rad_s", "gyro_y_rad_s", "gyro_z_rad_s")
+            self._add_vector_magnitude_features(features, samples, axis, prefix="gyro_mag")
+
+        rr_like = numeric_by_key.get("rr_ms") or numeric_by_key.get("hrv_ms")
+        if rr_like and len(rr_like) >= 2:
+            self._add_rr_like_features(features=features, rr_values=rr_like, samples=samples)
+
+        if stream_name == "polar_ecg":
+            ecg_values = numeric_by_key.get("voltage_uv")
+            if ecg_values:
+                self._add_ecg_quality_features(features=features, ecg_values=ecg_values, samples=samples)
+
+        if stream_name == "polar_acc":
+            self._add_polar_acc_features(features=features, samples=samples)
+
+        for key, values in non_numeric_by_key.items():
+            if not values:
+                continue
+            mode = Counter(values).most_common(1)[0][0]
+            features[f"{key}__mode"] = mode
+
+        return features
+
+    def _evaluate_window_quality_gate(
+        self,
+        stream_name: StreamName,
+        window_size_ms: int,
+        feature_values: dict[str, Any],
+    ) -> tuple[QualityStatus, Literal["keep", "mark", "drop"], list[str]]:
+        flags: list[str] = []
+        action: Literal["keep", "mark", "drop"] = "keep"
+
+        rr_valid_count = self._as_float(feature_values.get("rr_like__valid_count"))
+        rr_outlier_ratio = self._as_float(feature_values.get("rr_like__outlier_ratio"))
+        rr_window_duration = self._as_float(feature_values.get("rr_like__window_duration_ms"))
+        if rr_valid_count is not None:
+            if rr_valid_count < 2:
+                flags.append("rr_low_valid_count")
+                action = "drop"
+            elif rr_valid_count < 4 and action != "drop":
+                flags.append("rr_low_valid_count_soft")
+                action = "mark"
+        if rr_outlier_ratio is not None:
+            if rr_outlier_ratio >= 0.35:
+                flags.append("rr_high_outlier_ratio")
+                action = "drop"
+            elif rr_outlier_ratio >= 0.2 and action != "drop":
+                flags.append("rr_elevated_outlier_ratio")
+                action = "mark"
+        if rr_window_duration is not None and action != "drop":
+            min_rr_duration = max(5000.0, float(window_size_ms) * 0.4)
+            if rr_window_duration < min_rr_duration:
+                flags.append("rr_short_window_duration")
+                action = "mark"
+
+        ecg_coverage = self._as_float(feature_values.get("ecg_coverage_ratio"))
+        ecg_noise = self._as_float(feature_values.get("ecg_noise_ratio"))
+        ecg_peak_success = self._as_float(feature_values.get("ecg_peak_success_ratio"))
+        if ecg_coverage is not None:
+            if ecg_coverage < 0.6:
+                flags.append("ecg_low_coverage")
+                action = "drop"
+            elif ecg_coverage < 0.8 and action != "drop":
+                flags.append("ecg_reduced_coverage")
+                action = "mark"
+        if ecg_noise is not None:
+            if ecg_noise > 0.45:
+                flags.append("ecg_high_noise")
+                action = "drop"
+            elif ecg_noise > 0.25 and action != "drop":
+                flags.append("ecg_elevated_noise")
+                action = "mark"
+        if ecg_peak_success is not None and ecg_peak_success < 0.01 and action != "drop":
+            flags.append("ecg_low_peak_success_ratio")
+            action = "mark"
+
+        if stream_name.startswith("watch_") and "motion_artifact_ratio" in feature_values:
+            motion_ratio = self._as_float(feature_values.get("motion_artifact_ratio")) or 0.0
+            if motion_ratio > 0.6 and action != "drop":
+                flags.append("watch_motion_high_artifact_ratio")
+                action = "mark"
+
+        if action == "drop":
+            return "fail", action, flags
+        if action == "mark":
+            return "warning", action, flags
+        return "pass", action, flags
+
+    def _resolve_feature_family_tags(self, feature_keys: Iterable[str]) -> list[str]:
+        tags: list[str] = []
+        keys = list(feature_keys)
+        for family, selectors in FEATURE_FAMILY_SELECTORS.items():
+            for selector in selectors:
+                if any(self._feature_key_matches_selector(key, selector) for key in keys):
+                    tags.append(family)
+                    break
+        return sorted(tags)
+
+    @staticmethod
+    def _feature_key_matches_selector(feature_key: str, selector: str) -> bool:
+        if selector.endswith("*"):
+            return feature_key.startswith(selector[:-1])
+        return feature_key == selector
+
+    @staticmethod
+    def _feature_family_selectors_for_summary() -> dict[str, list[str]]:
+        return {family: list(selectors) for family, selectors in FEATURE_FAMILY_SELECTORS.items()}
+
+    @staticmethod
+    def _merge_quality_status(statuses: list[QualityStatus]) -> QualityStatus:
+        if not statuses:
+            return "pass"
+        if any(status == "fail" for status in statuses):
+            return "fail"
+        if any(status == "warning" for status in statuses):
+            return "warning"
+        return "pass"
+
+    def _add_rr_like_features(self, features: dict[str, Any], rr_values: list[float], samples: list[CleanSample]) -> None:
+        if len(rr_values) < 2:
+            return
+
+        rr_diffs = [rr_values[index] - rr_values[index - 1] for index in range(1, len(rr_values))]
+        abs_diffs = [abs(delta) for delta in rr_diffs]
+        mean_sq = sum(delta * delta for delta in rr_diffs) / len(rr_diffs)
+        rmssd = math.sqrt(mean_sq)
+        sdnn = pstdev(rr_values) if len(rr_values) >= 2 else 0.0
+        sdsd = pstdev(rr_diffs) if len(rr_diffs) >= 2 else 0.0
+        mean_rr = sum(rr_values) / len(rr_values)
+        median_rr = median(rr_values)
+        mean_abs_diff = sum(abs_diffs) / len(abs_diffs) if abs_diffs else 0.0
+        median_abs_diff = median(abs_diffs) if abs_diffs else 0.0
+        rr_sorted = sorted(rr_values)
+        rr_iqr = self._percentile(rr_sorted, 75.0) - self._percentile(rr_sorted, 25.0)
+        mad_rr = median([abs(item - median_rr) for item in rr_values])
+        rr_p10 = self._percentile(rr_sorted, 10.0)
+        rr_p90 = self._percentile(rr_sorted, 90.0)
+        nn20 = sum(1 for delta in abs_diffs if delta > 20.0)
+        nn50 = sum(1 for delta in abs_diffs if delta > 50.0)
+        pnn20 = (nn20 / len(abs_diffs)) * 100.0 if abs_diffs else 0.0
+        pnn50 = (nn50 / len(abs_diffs)) * 100.0 if abs_diffs else 0.0
+        cvnn = (sdnn / mean_rr) * 100.0 if mean_rr > 0 else 0.0
+        cvsd = (rmssd / mean_rr) * 100.0 if mean_rr > 0 else 0.0
+        hr_values = [60000.0 / item for item in rr_values if item > 0]
+        hr_min = min(hr_values) if hr_values else 0.0
+        hr_max = max(hr_values) if hr_values else 0.0
+        hr_range = hr_max - hr_min if hr_values else 0.0
+        mean_hr = (sum(hr_values) / len(hr_values)) if hr_values else 0.0
+
+        # Poincare plot descriptors, robust on short RR windows.
+        var_rr = self._variance(rr_values)
+        var_diff = self._variance(rr_diffs)
+        sd1 = math.sqrt(max(0.0, 0.5 * var_diff))
+        sd2_sq = max(0.0, (2.0 * var_rr) - (0.5 * var_diff))
+        sd2 = math.sqrt(sd2_sq)
+        sd1_sd2_ratio = (sd1 / sd2) if sd2 > 0 else 0.0
+
+        rr_hist_entropy = self._shannon_entropy(rr_values)
+        rr_triangular_index = self._rr_triangular_index(rr_values)
+        sample_entropy = self._sample_entropy(rr_values, m=2, r_scale=0.2)
+        vlf_power, lf_power, hf_power = self._rr_band_powers(rr_values)
+        lf_hf_ratio = (lf_power / hf_power) if hf_power > 0 else 0.0
+        lf_nu = (lf_power / (lf_power + hf_power)) * 100.0 if (lf_power + hf_power) > 0 else 0.0
+        hf_nu = (hf_power / (lf_power + hf_power)) * 100.0 if (lf_power + hf_power) > 0 else 0.0
+
+        window_duration_ms = max(0, samples[-1].aligned_offset_ms - samples[0].aligned_offset_ms) if samples else 0
+
+        features["rr_like__valid_count"] = len(rr_values)
+        features["rr_like__window_duration_ms"] = window_duration_ms
+        features["rr_like__mean_rr"] = round(mean_rr, 6)
+        features["rr_like__median_rr"] = round(median_rr, 6)
+        features["rr_like__min_rr"] = round(min(rr_values), 6)
+        features["rr_like__max_rr"] = round(max(rr_values), 6)
+        features["rr_like__rr_p10"] = round(rr_p10, 6)
+        features["rr_like__rr_p90"] = round(rr_p90, 6)
+        features["rr_like__sdnn"] = round(sdnn, 6)
+        features["rr_like__rmssd"] = round(rmssd, 6)
+        features["rr_like__sdsd"] = round(sdsd, 6)
+        features["rr_like__mean_abs_diff"] = round(mean_abs_diff, 6)
+        features["rr_like__median_abs_diff"] = round(median_abs_diff, 6)
+        features["rr_like__nn20"] = nn20
+        features["rr_like__pnn20"] = round(pnn20, 6)
+        features["rr_like__nn50"] = nn50
+        features["rr_like__pnn50"] = round(pnn50, 6)
+        features["rr_like__cvnn"] = round(cvnn, 6)
+        features["rr_like__cvsd"] = round(cvsd, 6)
+        features["rr_like__rr_range"] = round(max(rr_values) - min(rr_values), 6)
+        features["rr_like__rr_iqr"] = round(rr_iqr, 6)
+        features["rr_like__mad_rr"] = round(mad_rr, 6)
+        features["rr_like__mean_hr"] = round(mean_hr, 6)
+        features["rr_like__hr_min"] = round(hr_min, 6)
+        features["rr_like__hr_max"] = round(hr_max, 6)
+        features["rr_like__hr_range"] = round(hr_range, 6)
+        features["rr_like__sd1"] = round(sd1, 6)
+        features["rr_like__sd2"] = round(sd2, 6)
+        features["rr_like__sd1_sd2_ratio"] = round(sd1_sd2_ratio, 6)
+        features["rr_like__triangular_index"] = round(rr_triangular_index, 6)
+        features["rr_like__shannon_entropy"] = round(rr_hist_entropy, 6)
+        features["rr_like__sample_entropy_m2_r02"] = round(sample_entropy, 6)
+        features["rr_like__vlf_power"] = round(vlf_power, 6)
+        features["rr_like__lf_power"] = round(lf_power, 6)
+        features["rr_like__hf_power"] = round(hf_power, 6)
+        features["rr_like__lf_hf_ratio"] = round(lf_hf_ratio, 6)
+        features["rr_like__lf_nu"] = round(lf_nu, 6)
+        features["rr_like__hf_nu"] = round(hf_nu, 6)
+        features["rr_like__outlier_ratio"] = round(
+            (sum(1 for delta in abs_diffs if delta > 200.0) / len(abs_diffs)) if abs_diffs else 0.0,
+            6,
+        )
+
+    def _add_ecg_quality_features(self, features: dict[str, Any], ecg_values: list[float], samples: list[CleanSample]) -> None:
+        if not ecg_values:
+            return
+
+        sample_count = len(ecg_values)
+        window_duration_ms = max(0, samples[-1].aligned_offset_ms - samples[0].aligned_offset_ms) if samples else 0
+        expected_samples = max(1, int(window_duration_ms / DEFAULT_INTERVAL_MS["polar_ecg"]) + 1)
+        coverage_ratio = min(1.0, sample_count / expected_samples)
+
+        mean_voltage = sum(ecg_values) / sample_count
+        std_voltage = pstdev(ecg_values) if sample_count >= 2 else 0.0
+        baseline_wander_score = abs(mean_voltage) / (std_voltage + 1e-6)
+
+        noise_threshold = max(1000.0, (std_voltage * 3.0))
+        noisy_transitions = 0
+        for previous, current in zip(ecg_values, ecg_values[1:]):
+            if abs(current - previous) > noise_threshold:
+                noisy_transitions += 1
+        noise_ratio = (noisy_transitions / max(1, sample_count - 1)) if sample_count >= 2 else 0.0
+
+        peak_count = self._count_local_peaks(ecg_values, min_height=mean_voltage + std_voltage)
+        peak_success_ratio = peak_count / sample_count if sample_count > 0 else 0.0
+
+        features["ecg_sample_count"] = sample_count
+        features["ecg_coverage_ratio"] = round(coverage_ratio, 6)
+        features["ecg_peak_count"] = peak_count
+        features["ecg_peak_success_ratio"] = round(peak_success_ratio, 6)
+        features["ecg_noise_ratio"] = round(noise_ratio, 6)
+        features["ecg_baseline_wander_score"] = round(baseline_wander_score, 6)
+
+    def _add_polar_acc_features(self, features: dict[str, Any], samples: list[CleanSample]) -> None:
+        magnitudes: list[float] = []
+        offsets: list[int] = []
+        for sample in samples:
+            magnitude = self._extract_vector_magnitude(sample.values, ("acc_x_mg", "acc_y_mg", "acc_z_mg"))
+            if magnitude is None or not math.isfinite(magnitude):
+                continue
+            magnitudes.append(magnitude)
+            offsets.append(sample.aligned_offset_ms)
+
+        if len(magnitudes) < 2:
+            return
+
+        energy = sum(value * value for value in magnitudes) / len(magnitudes)
+        stationary_ratio = sum(1 for value in magnitudes if value < 1100.0) / len(magnitudes)
+        burst_count = sum(1 for value in magnitudes if value > 2500.0)
+
+        jerk_values: list[float] = []
+        for index in range(1, len(magnitudes)):
+            delta_time_s = max(0.001, (offsets[index] - offsets[index - 1]) / 1000.0)
+            jerk_values.append(abs(magnitudes[index] - magnitudes[index - 1]) / delta_time_s)
+
+        jerk_mean = sum(jerk_values) / len(jerk_values) if jerk_values else 0.0
+        jerk_std = pstdev(jerk_values) if len(jerk_values) >= 2 else 0.0
+
+        features["polar_acc__energy"] = round(energy, 6)
+        features["polar_acc__jerk_mean"] = round(jerk_mean, 6)
+        features["polar_acc__jerk_std"] = round(jerk_std, 6)
+        features["polar_acc__stationary_ratio"] = round(stationary_ratio, 6)
+        features["polar_acc__motion_burst_count"] = burst_count
+
+    def _add_vector_magnitude_features(
+        self,
+        output: dict[str, Any],
+        samples: list[CleanSample],
+        axis: tuple[str, str, str],
+        prefix: str,
+    ) -> None:
+        magnitudes: list[float] = []
+        for sample in samples:
+            magnitude = self._extract_vector_magnitude(sample.values, axis)
+            if magnitude is None or not math.isfinite(magnitude):
+                continue
+            magnitudes.append(magnitude)
+
+        if not magnitudes:
+            return
+
+        output[f"{prefix}__mean"] = round(sum(magnitudes) / len(magnitudes), 6)
+        output[f"{prefix}__std"] = round(pstdev(magnitudes), 6) if len(magnitudes) >= 2 else 0.0
+        output[f"{prefix}__max"] = max(magnitudes)
+        output[f"{prefix}__last"] = magnitudes[-1]
+
+    def _render_feature_windows_csv(self, processed_stream: ProcessedStream) -> str:
+        windows = processed_stream.feature_windows
+        value_keys: set[str] = set()
+        for window in windows:
+            value_keys.update(window.values.keys())
+
+        fieldnames = [
+            "window_index",
+            "started_offset_ms",
+            "ended_offset_ms",
+            "sample_count",
+            "feature_family_tags",
+            "quality_gate_status",
+            "quality_gate_action",
+            "quality_gate_flags",
+            *sorted(value_keys),
+        ]
+
+        buffer = StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for window in windows:
+            row: dict[str, Any] = {
+                "window_index": window.window_index,
+                "started_offset_ms": window.started_offset_ms,
+                "ended_offset_ms": window.ended_offset_ms,
+                "sample_count": window.sample_count,
+                "feature_family_tags": "|".join(window.feature_family_tags),
+                "quality_gate_status": window.quality_gate_status,
+                "quality_gate_action": window.quality_gate_action,
+                "quality_gate_flags": "|".join(window.quality_gate_flags),
+            }
+            for key in value_keys:
+                row[key] = window.values.get(key)
+            writer.writerow(row)
+
+        return buffer.getvalue()
+
     def _build_stream_clean_samples_key(self, session_id: str, pipeline_token: str, stream_name: StreamName) -> str:
         return f"{self._clean_root_prefix}/{session_id}/{pipeline_token}/streams/{stream_name}/samples.clean.csv.gz"
 
     def _build_stream_quality_key(self, session_id: str, pipeline_token: str, stream_name: StreamName) -> str:
         return f"{self._clean_root_prefix}/{session_id}/{pipeline_token}/streams/{stream_name}/quality-flags.json"
+
+    def _build_stream_features_key(self, session_id: str, pipeline_token: str, stream_name: StreamName) -> str:
+        return f"{self._clean_root_prefix}/{session_id}/{pipeline_token}/features/{stream_name}/windows.features.csv.gz"
 
     def _build_summary_key(self, session_id: str, pipeline_token: str) -> str:
         return f"{self._clean_root_prefix}/{session_id}/{pipeline_token}/reports/preprocessing-summary.json"
@@ -740,6 +1315,156 @@ class SignalProcessingService:
 
         return None
 
+    def _shannon_entropy(self, values: list[float], bins: int = 10) -> float:
+        if len(values) < 2:
+            return 0.0
+
+        low = min(values)
+        high = max(values)
+        if high <= low:
+            return 0.0
+
+        step = (high - low) / bins
+        if step <= 0:
+            return 0.0
+
+        counts = [0] * bins
+        for value in values:
+            idx = int((value - low) / step)
+            if idx >= bins:
+                idx = bins - 1
+            if idx < 0:
+                idx = 0
+            counts[idx] += 1
+
+        total = len(values)
+        entropy = 0.0
+        for count in counts:
+            if count <= 0:
+                continue
+            probability = count / total
+            entropy -= probability * math.log(probability)
+        return entropy
+
+    def _rr_triangular_index(self, rr_values: list[float], bin_width_ms: float = 7.8125) -> float:
+        if len(rr_values) < 2 or bin_width_ms <= 0:
+            return 0.0
+
+        low = min(rr_values)
+        high = max(rr_values)
+        if high <= low:
+            return 0.0
+
+        bins = max(1, int(math.ceil((high - low) / bin_width_ms)))
+        counts = [0] * bins
+        for value in rr_values:
+            idx = int((value - low) / bin_width_ms)
+            if idx >= bins:
+                idx = bins - 1
+            if idx < 0:
+                idx = 0
+            counts[idx] += 1
+
+        peak = max(counts) if counts else 0
+        if peak <= 0:
+            return 0.0
+        return len(rr_values) / peak
+
+    def _sample_entropy(self, values: list[float], m: int, r_scale: float) -> float:
+        if len(values) < m + 2:
+            return 0.0
+        sigma = pstdev(values) if len(values) >= 2 else 0.0
+        if sigma <= 0:
+            return 0.0
+        r = r_scale * sigma
+        if r <= 0:
+            return 0.0
+
+        def _count_matches(length: int) -> int:
+            count = 0
+            limit = len(values) - length + 1
+            for i in range(limit):
+                for j in range(i + 1, limit):
+                    distance = 0.0
+                    for k in range(length):
+                        distance = max(distance, abs(values[i + k] - values[j + k]))
+                    if distance <= r:
+                        count += 1
+            return count
+
+        b = _count_matches(m)
+        a = _count_matches(m + 1)
+        if b <= 0 or a <= 0:
+            return 0.0
+        return -math.log(a / b)
+
+    def _rr_band_powers(self, rr_values: list[float]) -> tuple[float, float, float]:
+        if len(rr_values) < 4:
+            return 0.0, 0.0, 0.0
+
+        sample_rate_hz = 4.0
+        step_s = 1.0 / sample_rate_hz
+
+        times_s: list[float] = [0.0]
+        for value in rr_values[:-1]:
+            times_s.append(times_s[-1] + max(0.001, value / 1000.0))
+
+        duration_s = times_s[-1]
+        if duration_s <= step_s:
+            return 0.0, 0.0, 0.0
+
+        resampled: list[float] = []
+        target_t = 0.0
+        cursor = 0
+        while target_t <= duration_s:
+            while cursor + 1 < len(times_s) and times_s[cursor + 1] < target_t:
+                cursor += 1
+
+            if cursor + 1 < len(times_s):
+                left_t = times_s[cursor]
+                right_t = times_s[cursor + 1]
+                left_v = rr_values[cursor]
+                right_v = rr_values[cursor + 1]
+                span = max(1e-6, right_t - left_t)
+                alpha = (target_t - left_t) / span
+                value = left_v + alpha * (right_v - left_v)
+            else:
+                value = rr_values[-1]
+
+            resampled.append(value)
+            target_t += step_s
+
+        if len(resampled) < 8:
+            return 0.0, 0.0, 0.0
+
+        mean_value = sum(resampled) / len(resampled)
+        detrended = [value - mean_value for value in resampled]
+        freq_resolution = sample_rate_hz / len(detrended)
+
+        vlf_power = 0.0
+        lf_power = 0.0
+        hf_power = 0.0
+        max_k = len(detrended) // 2
+
+        for k in range(1, max_k + 1):
+            frequency = k * freq_resolution
+            real = 0.0
+            imag = 0.0
+            for n, value in enumerate(detrended):
+                angle = 2.0 * math.pi * k * n / len(detrended)
+                real += value * math.cos(angle)
+                imag -= value * math.sin(angle)
+            power = (real * real + imag * imag) / len(detrended)
+
+            if 0.0033 <= frequency < 0.04:
+                vlf_power += power
+            elif 0.04 <= frequency < 0.15:
+                lf_power += power
+            elif 0.15 <= frequency <= 0.40:
+                hf_power += power
+
+        return vlf_power, lf_power, hf_power
+
     def _extract_numeric(self, values: dict[str, Any], keys: Iterable[str]) -> float | None:
         for key in keys:
             if key not in values:
@@ -762,3 +1487,36 @@ class SignalProcessingService:
             return None
 
         return math.sqrt(sum(component * component for component in extracted))
+
+    @staticmethod
+    def _variance(values: list[float]) -> float:
+        if len(values) < 2:
+            return 0.0
+        mean_value = sum(values) / len(values)
+        return sum((item - mean_value) * (item - mean_value) for item in values) / len(values)
+
+    @staticmethod
+    def _percentile(sorted_values: list[float], q: float) -> float:
+        if not sorted_values:
+            return 0.0
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+
+        position = (len(sorted_values) - 1) * (q / 100.0)
+        lower = int(math.floor(position))
+        upper = int(math.ceil(position))
+        if lower == upper:
+            return sorted_values[lower]
+        weight = position - lower
+        return (sorted_values[lower] * (1.0 - weight)) + (sorted_values[upper] * weight)
+
+    @staticmethod
+    def _count_local_peaks(values: list[float], min_height: float) -> int:
+        if len(values) < 3:
+            return 0
+        count = 0
+        for index in range(1, len(values) - 1):
+            current = values[index]
+            if current >= min_height and current > values[index - 1] and current > values[index + 1]:
+                count += 1
+        return count

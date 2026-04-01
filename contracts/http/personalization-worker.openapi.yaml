@@ -1,0 +1,114 @@
+openapi: 3.1.0
+info:
+  title: On-Go Personalization Worker
+  version: 0.1.0
+  description: |
+    Profile store, calibration and adaptation for personalized inference.
+    K4.
+servers:
+  - url: https://api.on-go.local
+tags:
+  - name: Profile
+    description: User profile for personalization
+paths:
+  /health:
+    get:
+      tags: [Profile]
+      operationId: health
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /v1/profile/{subject_id}:
+    get:
+      tags: [Profile]
+      operationId: get_profile
+      summary: Получить профиль по subject_id
+      parameters:
+        - name: subject_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '404':
+          description: Profile not found
+  /v1/profile:
+    put:
+      tags: [Profile]
+      operationId: put_profile
+      summary: Создать или обновить профиль
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileCreate'
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '422':
+          description: Validation error
+components:
+  schemas:
+    ProfileCreate:
+      type: object
+      required: [subject_id, physiology_baseline]
+      properties:
+        subject_id:
+          type: string
+          minLength: 1
+        physiology_baseline:
+          type: object
+        adaptation_state:
+          $ref: '#/components/schemas/AdaptationState'
+        notes:
+          type: string
+    ProfileResponse:
+      type: object
+      required: [subject_id, physiology_baseline, adaptation_state, created_at_utc, updated_at_utc]
+      properties:
+        subject_id:
+          type: string
+        physiology_baseline:
+          type: object
+        adaptation_state:
+          $ref: '#/components/schemas/AdaptationState'
+        created_at_utc:
+          type: string
+          format: date-time
+        updated_at_utc:
+          type: string
+          format: date-time
+        notes:
+          type: string
+    AdaptationState:
+      type: object
+      properties:
+        global_model_reference:
+          type: string
+        active_personalization_level:
+          type: string
+          enum: [none, light, full]
+        last_calibrated_at_utc:
+          type: string
+          format: date-time
+          nullable: true

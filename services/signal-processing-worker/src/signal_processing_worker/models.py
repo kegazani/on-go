@@ -64,6 +64,39 @@ class CleanSample(BaseModel):
     quality_flags: list[str] = Field(default_factory=list)
 
 
+class FeatureWindow(BaseModel):
+    window_index: int = Field(ge=0)
+    started_offset_ms: int = Field(ge=0)
+    ended_offset_ms: int = Field(ge=0)
+    sample_count: int = Field(ge=0)
+    feature_family_tags: list[str] = Field(default_factory=list)
+    quality_gate_status: QualityStatus = "pass"
+    quality_gate_action: Literal["keep", "mark", "drop"] = "keep"
+    quality_gate_flags: list[str] = Field(default_factory=list)
+    values: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "FeatureWindow":
+        if self.ended_offset_ms < self.started_offset_ms:
+            raise ValueError("ended_offset_ms must be >= started_offset_ms")
+        return self
+
+
+class StreamFeatureSummary(BaseModel):
+    window_size_ms: int = Field(ge=1)
+    step_size_ms: int = Field(ge=1)
+    window_count: int = Field(default=0, ge=0)
+    covered_duration_ms: int = Field(default=0, ge=0)
+    feature_names: list[str] = Field(default_factory=list)
+    feature_family_selectors: dict[str, list[str]] = Field(default_factory=dict)
+    feature_family_tags: list[str] = Field(default_factory=list)
+    quality_gate_policy: str | None = None
+    quality_gate_kept_windows: int = Field(default=0, ge=0)
+    quality_gate_marked_windows: int = Field(default=0, ge=0)
+    quality_gate_dropped_windows: int = Field(default=0, ge=0)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class StreamQualitySummary(BaseModel):
     expected_interval_ms: int | None = Field(default=None, ge=1)
     raw_sample_count: int = Field(default=0, ge=0)
@@ -74,6 +107,11 @@ class StreamQualitySummary(BaseModel):
     packet_loss_estimated_samples: int = Field(default=0, ge=0)
     motion_artifact_count: int = Field(default=0, ge=0)
     noisy_sample_count: int = Field(default=0, ge=0)
+    rr_quality_gate_status: QualityStatus = "pass"
+    ecg_quality_gate_status: QualityStatus = "pass"
+    quality_gate_policy: str | None = None
+    quality_gate_marked_window_count: int = Field(default=0, ge=0)
+    quality_gate_dropped_window_count: int = Field(default=0, ge=0)
     gap_intervals: list[OffsetInterval] = Field(default_factory=list)
     motion_artifact_intervals: list[OffsetInterval] = Field(default_factory=list)
     noisy_intervals: list[OffsetInterval] = Field(default_factory=list)
@@ -91,8 +129,11 @@ class ProcessedStream(BaseModel):
     alignment_delta_ms: int
     quality: StreamQualitySummary
     clean_samples: list[CleanSample] = Field(default_factory=list, exclude=True)
+    feature_windows: list[FeatureWindow] = Field(default_factory=list, exclude=True)
+    feature_summary: StreamFeatureSummary | None = None
     clean_samples_object_key: str | None = None
     quality_report_object_key: str | None = None
+    features_object_key: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 

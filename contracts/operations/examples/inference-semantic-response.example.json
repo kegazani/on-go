@@ -1,0 +1,22 @@
+{
+  "activity": "focused_cognitive_task",
+  "activity_class": "cognitive",
+  "arousal_coarse": "high",
+  "valence_coarse": "unknown",
+  "valence_scoped_status": {
+    "mode": "internal_scoped",
+    "context": "internal_dashboard",
+    "enabled_for_context": true,
+    "user_facing_claims": false,
+    "risk_notifications": true,
+    "auto_personalization_trigger": false,
+    "reason": "valence_low_confidence"
+  },
+  "derived_state": "possible_stress",
+  "confidence": {
+    "score": 0.71,
+    "band": "medium"
+  },
+  "fallback_reason": "valence_low_confidence",
+  "claim_level": "guarded"
+}

@@ -1,0 +1,23 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    profiles:
+      - tls
+    ports:
+      - "${ON_GO_CADDY_HTTP_PORT:-80}:80"
+      - "${ON_GO_CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - on-go-caddy-data:/data
+      - on-go-caddy-config:/config
+    depends_on:
+      - ingest-api
+      - minio
+      - replay-service
+      - inference-api
+      - live-inference-api
+      - personalization-worker
+
+volumes:
+  on-go-caddy-data:
+  on-go-caddy-config:

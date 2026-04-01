@@ -282,7 +282,7 @@ class FinalizeRawSessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     package_checksum_sha256: str = Field(pattern=SHA256_PATTERN)
-    checksum_file_path: str = Field(min_length=3, max_length=1024)
+    checksum_file_path: str = Field(min_length=3, max_length=1024, pattern=r"^checksums/SHA256SUMS$")
     client_observed: FinalizeClientObserved | None = None
 
 

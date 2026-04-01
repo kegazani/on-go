@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go/contracts/personalization/personalization-feature-contract.schema.json",
+  "title": "OnGo Personalization Feature Contract",
+  "description": "Contract for inputs consumed by personalization training/evaluation jobs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "subject_id",
+    "global_model_candidate_id",
+    "track",
+    "modality",
+    "feature_vector",
+    "target",
+    "provenance"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "h1-feature-contract-v1"
+    },
+    "subject_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "global_model_candidate_id": {
+      "type": "string",
+      "description": "Reference to selected global run from G3.1/G3.2."
+    },
+    "track": {
+      "type": "string",
+      "enum": [
+        "activity",
+        "arousal_coarse",
+        "valence_exploratory"
+      ]
+    },
+    "modality": {
+      "type": "string",
+      "enum": [
+        "watch_only",
+        "fusion"
+      ]
+    },
+    "feature_vector": {
+      "type": "object",
+      "description": "Numerical features extracted by signal-processing-worker/modeling-baselines.",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "confidence",
+        "source"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "participant_self_report",
+            "protocol",
+            "operator_review",
+            "proxy_mapping"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_id",
+        "dataset_version",
+        "session_id",
+        "segment_id",
+        "split",
+        "preprocessing_version"
+      ],
+      "properties": {
+        "dataset_id": {
+          "type": "string"
+        },
+        "dataset_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "segment_id": {
+          "type": "string"
+        },
+        "split": {
+          "type": "string",
+          "enum": [
+            "train",
+            "validation",
+            "test"
+          ]
+        },
+        "preprocessing_version": {
+          "type": "string"
+        }
+      }
+    },
+    "calibration_tag": {
+      "type": "string",
+      "enum": [
+        "allowed_for_calibration",
+        "evaluation_only"
+      ]
+    }
+  }
+}

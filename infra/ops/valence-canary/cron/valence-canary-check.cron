@@ -1,0 +1,2 @@
+# Run valence canary checks hourly.
+0 * * * * cd /Users/kgz/Desktop/p/on-go && /usr/bin/python3 scripts/ml/valence_e2_13_canary_hardening.py --check-interval-minutes 60 && /usr/bin/python3 scripts/ml/valence_e2_15_scheduler_dashboard.py

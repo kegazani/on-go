@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 IngestStatus = Literal["accepted", "uploading", "uploaded", "validating", "ingested", "failed", "cancelled"]
 ReplayMode = Literal["realtime", "accelerated"]
+ReplayRunOrchestrationMode = Literal["single_window", "full_session"]
+ReplayRunStatus = Literal["created", "running", "completed", "failed", "cancelled"]
 StreamName = Literal[
     "polar_ecg",
     "polar_rr",
@@ -131,3 +133,30 @@ class ReplayWindowResponse(BaseModel):
     samples: list[ReplaySample]
     events: list[ReplayEvent]
     warnings: list[str] = Field(default_factory=list)
+
+
+class ReplayRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    orchestration_mode: ReplayRunOrchestrationMode = "full_session"
+    window_request: ReplayWindowRequest = Field(default_factory=ReplayWindowRequest)
+
+
+class ReplayRunState(BaseModel):
+    run_id: str
+    session_id: str
+    status: ReplayRunStatus
+    orchestration_mode: ReplayRunOrchestrationMode
+    window_request: ReplayWindowRequest
+    created_at_utc: datetime
+    started_at_utc: datetime | None = None
+    completed_at_utc: datetime | None = None
+    failed_at_utc: datetime | None = None
+    last_error: ErrorPayload | None = None
+    window_count: int = Field(ge=0)
+    sample_count: int = Field(ge=0)
+    event_count: int = Field(ge=0)
+
+
+class ReplayRunListResponse(BaseModel):
+    runs: list[ReplayRunState]

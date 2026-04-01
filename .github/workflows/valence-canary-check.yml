@@ -1,0 +1,33 @@
+name: Valence Canary Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  canary-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run E2.13 canary check
+        run: |
+          python3 scripts/ml/valence_e2_13_canary_hardening.py --check-interval-minutes 60
+
+      - name: Run E2.15 dashboard snapshot refresh
+        run: |
+          python3 scripts/ml/valence_e2_15_scheduler_dashboard.py
+
+      - name: Upload canary artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: valence-canary-artifacts
+          path: |
+            data/external/wesad/artifacts/wesad/wesad-v1/e2-13-valence-canary-hardening/*
+            data/external/wesad/artifacts/wesad/wesad-v1/e2-15-valence-scheduler-dashboard/*

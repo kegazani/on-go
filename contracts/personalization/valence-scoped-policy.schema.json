@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go/contracts/personalization/valence-scoped-policy.schema.json",
+  "title": "Valence Scoped Policy",
+  "type": "object",
+  "required": [
+    "policy_id",
+    "mode",
+    "allowed_contexts",
+    "model",
+    "direction_rules",
+    "guardrails",
+    "rollback"
+  ],
+  "properties": {
+    "policy_id": {
+      "type": "string",
+      "description": "Versioned policy identifier."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["disabled", "internal_scoped", "limited_production"],
+      "description": "Activation mode for valence path."
+    },
+    "allowed_contexts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["research_only", "internal_dashboard", "shadow_mode"]
+      },
+      "minItems": 1
+    },
+    "model": {
+      "type": "object",
+      "required": ["classifier_kind", "trusted_floor", "confidence_threshold"],
+      "properties": {
+        "classifier_kind": {
+          "type": "string"
+        },
+        "trusted_floor": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "confidence_threshold": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      }
+    },
+    "direction_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["direction", "enabled", "min_macro_f1"],
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": ["wesad_to_grex", "grex_to_wesad"]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "min_macro_f1": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          }
+        }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "required": ["user_facing_claims", "risk_notifications", "auto_personalization_trigger"],
+      "properties": {
+        "user_facing_claims": {
+          "type": "boolean"
+        },
+        "risk_notifications": {
+          "type": "boolean"
+        },
+        "auto_personalization_trigger": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "required": ["trigger_any", "checks"],
+      "properties": {
+        "trigger_any": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "threshold", "comparison"],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "threshold": {
+                "type": "number"
+              },
+              "comparison": {
+                "type": "string",
+                "enum": ["lt", "lte", "gt", "gte"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

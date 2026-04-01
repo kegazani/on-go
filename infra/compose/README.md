@@ -1,42 +1,59 @@
 # Local Infrastructure
 
-Локальная инфраструктура для разработки backend-фаз.
+Локальная и серверная инфраструктура backend.
 
-## Стеки
+## on-go-stack.yml
 
-### on-go-stack.yml (рекомендуется)
-
-Полный стек для разработки и тестирования с мобильным приложением:
+Сервисы:
 
 - `postgres` (5432)
 - `minio` + `minio-init` (9000, 9001)
-- `ingest-api` (8080) — точка входа для iPhone
+- `redis` (6379)
+- `ingest-api` (8080)
 - `replay-service` (8090)
+- `inference-api` (8100)
+- `live-inference-api` (8120)
+- `personalization-worker` (8110)
+- `replay-infer-ui` (8121)
+- `signal-processing-worker` (профиль `batch`, см. ниже)
+
+Модель: том `on-go-models` по умолчанию. Заполнение: `./scripts/bootstrap-model-volume.sh` при заданном `ON_GO_MODEL_BUNDLE_SOURCE`, либо `ON_GO_MODEL_VOLUME` в `.env` на абсолютный путь к bundle на хосте.
 
 Запуск:
 
 ```bash
+cp .env.example .env
 ./scripts/run-stack.sh
 ```
 
-Или:
+TLS-прокси Caddy (профиль `tls`): задать `ON_GO_ENABLE_TLS_PROXY=1` в окружении или `.env` и использовать второй файл compose:
 
 ```bash
-docker compose -f infra/compose/on-go-stack.yml up --build
+docker compose --env-file .env -f infra/compose/on-go-stack.yml -f infra/compose/on-go-stack.tls.yml --profile tls up --build
 ```
 
-### raw-ingest-stack.yml
+`run-stack.sh` подключает оба файла и передаёт `--profile tls`, если `ON_GO_ENABLE_TLS_PROXY=1`.
 
-Минимальный стек (ingest-only):
+Подробнее: [Server deploy](../../docs/deployment/server-deploy.md).
 
-- `postgres`
-- `minio` + `minio-init`
-- `ingest-api`
+## raw-ingest-stack.yml
+
+Минимальный стек (ingest-only): `postgres`, `minio`, `minio-init`, `ingest-api`.
+
+## signal-processing-worker (batch)
+
+Одноразовый прогон по сессии с хоста:
 
 ```bash
-docker compose -f infra/compose/raw-ingest-stack.yml up --build
+./scripts/run-signal-worker.sh <session_id>
 ```
 
-## Подключение мобильного приложения
+Чтобы контейнер воркера крутился в фоне (`sleep infinity`) для отладки:
+
+```bash
+docker compose -f infra/compose/on-go-stack.yml --profile batch up -d signal-processing-worker
+```
+
+## Мобильное приложение
 
 См. [Local Docker Setup](../../docs/setup/local-docker-setup.md).

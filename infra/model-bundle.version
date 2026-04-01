@@ -1,0 +1,2 @@
+artifact_path=wesad/wesad-v1/m7-9-runtime-bundle-export
+notes=Populate Docker volume on-go-models via scripts/bootstrap-model-volume.sh or set ON_GO_MODEL_VOLUME to a host path.

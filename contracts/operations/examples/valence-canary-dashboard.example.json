@@ -1,0 +1,18 @@
+{
+  "snapshot_id": "valence-canary-snapshot-example",
+  "generated_at_utc": "2026-03-28T00:00:00+00:00",
+  "policy_mode": "internal_scoped",
+  "effective_mode": "internal_scoped",
+  "auto_disable": false,
+  "status": "healthy",
+  "alerts_count": 0,
+  "latest_check_utc": "2026-03-28T00:00:00+00:00",
+  "next_check_utc": "2026-03-28T01:00:00+00:00",
+  "check_interval_minutes": 60,
+  "alerts": [],
+  "kpi_rollup": {
+    "cycles_evaluated": 5,
+    "triggers_evaluated": 15,
+    "triggered_count": 0
+  }
+}

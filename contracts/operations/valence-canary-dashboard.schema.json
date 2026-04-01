@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go.local/contracts/operations/valence-canary-dashboard.schema.json",
+  "title": "Valence Canary Dashboard Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_id",
+    "generated_at_utc",
+    "policy_mode",
+    "effective_mode",
+    "auto_disable",
+    "status",
+    "alerts_count",
+    "latest_check_utc",
+    "next_check_utc",
+    "check_interval_minutes",
+    "alerts"
+  ],
+  "properties": {
+    "snapshot_id": {
+      "type": "string"
+    },
+    "generated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_mode": {
+      "type": "string",
+      "enum": ["disabled", "internal_scoped", "limited_production"]
+    },
+    "effective_mode": {
+      "type": "string",
+      "enum": ["disabled", "internal_scoped", "limited_production"]
+    },
+    "auto_disable": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["healthy", "degraded", "disabled"]
+    },
+    "alerts_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "latest_check_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "next_check_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "check_interval_minutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "kpi_rollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cycles_evaluated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "triggers_evaluated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "triggered_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

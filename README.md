@@ -56,6 +56,21 @@ workspace/
 - `docs/research/session-data-schema.md`
 - `docs/research/label-specification.md`
 - `docs/research/evaluation-plan.md`
+- `docs/research/model-reporting-standard.md`
+- `docs/research/personalization-user-profile-schema.md`
+- `docs/research/personalization-methodology-redesign.md`
+- `docs/research/personalization-realtime-evaluation-plan.md`
+- `docs/research/f1-equals-one-analysis.md`
+
+Документы dataset-фазы:
+
+- `docs/datasets/external-datasets-f1-prioritization.md`
+- `docs/datasets/dataset-registry-format.md`
+- `docs/datasets/external-datasets-onboarding-runbook.md`
+
+Локальная структура внешних данных:
+
+- `data/external/README.md`
 
 Документы capture-фазы:
 
@@ -71,16 +86,56 @@ workspace/
 
 - `docs/backend/raw-ingest-c1.md`
 - `docs/backend/raw-ingest-c2.md`
+- `docs/backend/raw-ingest-c3.md`
+- `docs/backend/raw-ingest-c4.md`
 - `docs/backend/replay-d1.md`
+- `docs/backend/replay-d2.md`
+- `docs/backend/replay-d3.md`
 - `docs/backend/signal-processing-e1.md`
+- `docs/backend/signal-processing-e2.md`
+- `docs/backend/datasets-f2.md`
+- `docs/backend/datasets-f2-1.md`
+- `docs/backend/datasets-f2-2.md`
+- `docs/backend/datasets-f2-3.md`
+- `docs/backend/modeling-g1.md`
+- `docs/backend/modeling-g2.md`
+- `docs/backend/modeling-g3.md`
+- `docs/backend/modeling-g3-1.md`
+- `docs/backend/modeling-g3-2.md`
+- `docs/backend/personalization-h1.md`
+- `docs/backend/personalization-h2.md`
+- `docs/backend/personalization-h3.md`
+- `docs/backend/personalization-h4.md`
+- `docs/backend/personalization-h5.md`
+- `docs/backend/personalization-h6.md`
+- `docs/backend/research-gate-i1.md`
+- `docs/backend/personalization-i1-1.md`
 
 HTTP-контракты backend ingest:
 
 - `contracts/http/raw-session-ingest.openapi.yaml`
 - `contracts/http/raw-session-replay.openapi.yaml`
+- `contracts/http/inference-api.openapi.yaml`
+- `contracts/http/personalization-worker.openapi.yaml`
+- `contracts/http/live-inference-api.openapi.yaml`
+- `contracts/personalization/user-profile.schema.json`
+- `contracts/personalization/personalization-feature-contract.schema.json`
+
+Архитектура production backend:
+
+- `docs/architecture/production-backend.md`
+
+Operations (K3):
+
+- `docs/operations/runbook.md`
 
 Сервисы backend:
 
 - `services/ingest-api/README.md`
 - `services/replay-service/README.md`
 - `services/signal-processing-worker/README.md`
+- `services/dataset-registry/README.md`
+- `services/modeling-baselines/README.md`
+- `services/inference-api/README.md`
+- `services/personalization-worker/README.md`
+- `services/live-inference-api/README.md`

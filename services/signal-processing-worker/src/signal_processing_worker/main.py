@@ -12,7 +12,7 @@ from signal_processing_worker.storage import S3Storage
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run E1 preprocessing for a raw session")
+    parser = argparse.ArgumentParser(description="Run E1/E2 preprocessing and feature extraction for a raw session")
     parser.add_argument("--session-id", required=True, help="Raw session_id to preprocess")
     parser.add_argument(
         "--preprocessing-version",

@@ -94,6 +94,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/replay/sessions/{session_id}/runs:
+    post:
+      summary: Register replay run
+      operationId: createReplayRun
+      parameters:
+        - in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayRunRequest"
+      responses:
+        "200":
+          description: Replay run created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayRunState"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Session is not ready for replay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/replay/runs:
+    get:
+      summary: List replay runs
+      operationId: listReplayRuns
+      parameters:
+        - in: query
+          name: session_id
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Replay runs list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayRunListResponse"
+  /v1/replay/runs/{run_id}:
+    get:
+      summary: Get replay run
+      operationId: getReplayRun
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Replay run state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayRunState"
+        "404":
+          description: Replay run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/replay/runs/{run_id}/events:
+    get:
+      summary: Stream replay run windows as SSE
+      operationId: streamReplayRunEvents
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Server-Sent Events stream (`replay_window`, `run_completed`, `run_failed`)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          description: Replay run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     ReplayMode:
@@ -317,6 +415,60 @@ components:
         - samples
         - events
         - warnings
+    ReplayRunOrchestrationMode:
+      type: string
+      enum: [single_window, full_session]
+    ReplayRunStatus:
+      type: string
+      enum: [created, running, completed, failed, cancelled]
+    ReplayRunRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        orchestration_mode:
+          $ref: "#/components/schemas/ReplayRunOrchestrationMode"
+        window_request:
+          $ref: "#/components/schemas/ReplayWindowRequest"
+      required: []
+    ReplayRunState:
+      type: object
+      properties:
+        run_id: { type: string }
+        session_id: { type: string }
+        status:
+          $ref: "#/components/schemas/ReplayRunStatus"
+        orchestration_mode:
+          $ref: "#/components/schemas/ReplayRunOrchestrationMode"
+        window_request:
+          $ref: "#/components/schemas/ReplayWindowRequest"
+        created_at_utc: { type: string, format: date-time }
+        started_at_utc: { type: string, format: date-time, nullable: true }
+        completed_at_utc: { type: string, format: date-time, nullable: true }
+        failed_at_utc: { type: string, format: date-time, nullable: true }
+        last_error:
+          $ref: "#/components/schemas/ErrorPayload"
+          nullable: true
+        window_count: { type: integer, minimum: 0 }
+        sample_count: { type: integer, minimum: 0 }
+        event_count: { type: integer, minimum: 0 }
+      required:
+        - run_id
+        - session_id
+        - status
+        - orchestration_mode
+        - window_request
+        - created_at_utc
+        - window_count
+        - sample_count
+        - event_count
+    ReplayRunListResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayRunState"
+      required: [runs]
     ErrorPayload:
       type: object
       properties:

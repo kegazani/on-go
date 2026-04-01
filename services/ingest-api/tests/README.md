@@ -1,9 +1,10 @@
 # Tests
 
-В шаге `C2` добавлен runtime-сервис и локальная инфраструктура.
+В шаге `C4` добавлены интеграционные/контрактные тесты ingest lifecycle с raw package fixtures.
 
-Рекомендуемые следующие тесты (следующий инкремент):
+Текущее покрытие:
 
-1. контрактные тесты endpoint-ов against `raw-session-ingest.openapi.yaml`;
-2. интеграционные тесты upload/finalize на локальном compose-стеке;
-3. проверка idempotency-веток для create/complete/finalize.
+1. API-level lifecycle test: `create -> presign -> complete -> finalize -> state` с fixture-пакетом.
+2. Contract route/operation checks against `contracts/http/raw-session-ingest.openapi.yaml`.
+3. Idempotency conflict test для `complete`.
+4. Negative finalize test для `package_checksum_sha256` mismatch.

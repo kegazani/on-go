@@ -350,28 +350,53 @@
    - session-wise;
    - cross-dataset, где применимо.
 6. Подготовить сравнительный отчет.
+7. Для каждого major run сохранять подробный research report:
+   - labels;
+   - preprocessing;
+   - features;
+   - data inclusion/exclusion;
+   - model config;
+   - результаты;
+   - failure analysis;
+   - выводы для decision making.
+8. Для baseline и comparison шагов строить подробные графики и таблицы, пригодные для презентации.
+9. Сравнивать не одну модель, а несколько candidate approaches:
+   - trivial baselines;
+   - classical ML baselines;
+   - modality ablations;
+   - feature ablations;
+   - при достаточных данных sequence-aware families.
+10. Перед переходом к personalization выполнять multi-dataset harmonization и benchmarking:
+   - довести минимум `3` внешних datasets до modeling-ready состояния;
+   - прогнать per-dataset и cross-dataset сравнение;
+   - зафиксировать переносимость лучших `watch-only/fusion` подходов.
 
 ### Артефакты
 
 1. `training-pipeline`.
 2. Baseline experiment configs.
 3. Evaluation report.
+4. Detailed `research report` по каждому основному experiment family.
+5. Пакет графиков и сравнительных таблиц для презентации.
+6. Сводная таблица сравнения model families, modalities и ablations.
 
 ### Критерий завершения
 
-Есть сравнимые цифры по `fusion` и `watch-only` на одинаковом evaluation protocol.
+Есть сравнимые цифры по `fusion` и `watch-only` на одинаковом evaluation protocol, плюс подробные отчеты и визуальные comparison artifacts, достаточные для research review и презентации.
 
 ### Что просить у меня на этом этапе
 
 1. "Сделай baseline training pipeline для fusion и watch-only моделей."
 2. "Добавь evaluation scripts и отчеты по метрикам."
 3. "Сделай первое сравнение моделей на наших данных."
+4. "Сделай подробный research report с графиками, label/data/preprocessing traceability и сравнением нескольких моделей."
+5. "Сделай multi-dataset harmonization и comparative benchmark по WESAD/EmoWear/DAPPER/G-REx."
 
 ## 12. Фаза H: Personalization Research
 
 ### Цель
 
-Проверить, насколько персонализация улучшает качество.
+Проверить, насколько персонализация улучшает качество, и сформировать воспроизводимую методику персонализации как основной научный вклад работы.
 
 ### Задачи
 
@@ -391,22 +416,36 @@
 4. Сравнить:
    - `global fusion` vs `personalized fusion`;
    - `global watch-only` vs `personalized watch-only`.
+5. Для каждого personalization run публиковать подробный research report с budget, subject-level gains, деградациями и графиками.
+6. После базовых `light/full` вариантов выделить отдельный methodological track:
+   - персонализация поверх уже обученного `WESAD` baseline;
+   - `watch-only` и `fusion` как две обязательные линии;
+   - `arousal` и `valence` как основные целевые personalization outputs;
+   - label-efficient и label-free варианты адаптации как основной предмет исследования.
+7. Перед переходом в ML Platform зафиксировать:
+   - research objective;
+   - сравниваемые personalization strategies;
+   - границы claim-grade интерпретации для `valence` и внешних datasets.
 
 ### Артефакты
 
 1. `personalization-worker`.
 2. Персональный профиль субъекта.
 3. Отчет по приросту качества после персонализации.
+4. Графики subject-level personalization gain и sensitivity к calibration budget.
+5. Документ с методикой персонализации и научными гипотезами по adaptation strategies.
 
 ### Критерий завершения
 
-Есть измеримый и воспроизводимый результат влияния персонализации на обе модели.
+Есть измеримый и воспроизводимый результат влияния персонализации на обе модели, документированный подробным сравнительным отчетом и визуальными артефактами.
 
 ### Что просить у меня на этом этапе
 
 1. "Сделай схему профиля пользователя для персонализации."
 2. "Добавь light personalization в pipeline."
 3. "Реализуй персонализированное дообучение модели."
+4. "Переформулируй roadmap так, чтобы основной научный вклад был в методике персонализации поверх WESAD baseline."
+5. "Добавь сравнение label-efficient и label-free personalization strategies."
 
 ## 13. Фаза I: Research Report and Decision Gate
 
@@ -427,7 +466,12 @@
    - `fusion`;
    - `watch-only`;
    - personalized variants.
-3. Определить production scope:
+3. Свести в единый presentation-ready пакет:
+   - comparison tables;
+   - графики;
+   - narrative summary;
+   - ограничения и decision points.
+4. Определить production scope:
    - какие модели идут дальше;
    - какие сигналы обязательны;
    - какие функции остаются исследовательскими.
@@ -437,6 +481,7 @@
 1. Research report.
 2. Production scope decision.
 3. Список зафиксированных допущений и ограничений.
+4. Presentation-ready comparison package.
 
 ### Критерий завершения
 
@@ -446,6 +491,27 @@
 
 1. "Собери research report по текущим экспериментам."
 2. "Сформулируй production scope на основе результатов исследования."
+
+### Уточнение после первого decision gate
+
+Если после `I1` принято решение, что основной научный вклад работы должен быть не в расширении global modeling, а в personalization methodology, допускается возврат в `H` для отдельного methodological sub-track перед `J`.
+
+В этом режиме:
+
+1. `WESAD`-trained baseline считается достаточной стартовой глобальной моделью.
+2. Основной акцент переносится на personalization strategies для:
+   - `watch-only`;
+   - `fusion`.
+3. Следующие research steps должны отвечать на вопросы:
+   - какие personalization variants реально улучшают `arousal/valence`;
+   - сколько calibration budget нужно;
+   - можно ли персонализировать модель без новых ручных labels;
+   - как это затем проверять в realtime/replay-контуре.
+4. Возврат к расширению global modeling фиксируется как отдельный future track, а не как ближайший приоритет.
+5. Обучение более крупной pooled multi-dataset модели имеет смысл только после выполнения обоих условий:
+   - появились безопасные harmonized non-label signal features, общие для внешних datasets;
+   - для внешних datasets появились нормальные claim-grade labels вместо proxy-mapping как основного источника supervision.
+6. До выполнения этих условий внешние datasets используются прежде всего для harmonization, validation, transfer-checks и подготовки будущего pooled training контура.
 
 ## 14. Фаза J: Reproducible ML Platform
 
@@ -508,6 +574,15 @@
 4. Ввести auth, audit, observability.
 5. Ввести деплой в окружения.
 6. Настроить мониторинг качества моделей после выкладки.
+7. Зафиксировать semantic output layer для inference:
+   - прямые сигналы `activity/context`;
+   - прямые сигналы `arousal`;
+   - scoped `valence` с `unknown` fallback;
+   - производный `derived_state` для продуктовой интерпретации.
+8. Явно разделить:
+   - что можно показывать пользователю;
+   - что остается internal/research-only;
+   - где обязательны confidence gates и fallback rules.
 
 ### Артефакты
 
@@ -515,6 +590,7 @@
 2. CI/CD.
 3. Production-grade observability.
 4. Документы по эксплуатации.
+5. Контракт semantic outputs и derived-state policy.
 
 ### Критерий завершения
 
@@ -525,6 +601,8 @@
 1. "Сделай сервисную архитектуру production backend."
 2. "Реализуй inference API и очередь асинхронной обработки."
 3. "Добавь model registry и механизм выкладки новой модели."
+4. "Зафиксируй contract для activity/arousal/valence/derived_state и правила unknown/fallback."
+5. "Опиши, как из activity/arousal/valence собирать product-facing состояние пользователя."
 
 ## 16. Рекомендуемый технический стек
 

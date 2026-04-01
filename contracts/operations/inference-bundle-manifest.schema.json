@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go.local/contracts/operations/inference-bundle-manifest.schema.json",
+  "title": "Inference Bundle Manifest",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "bundle_id",
+    "direct_outputs"
+  ],
+  "properties": {
+    "manifest_version": {
+      "type": "string"
+    },
+    "bundle_id": {
+      "type": "string"
+    },
+    "bundle_version": {
+      "type": "string"
+    },
+    "required_live_streams": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "optional_live_streams": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "direct_outputs": {
+      "type": "object",
+      "required": [
+        "activity",
+        "arousal_coarse"
+      ],
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/track"
+        },
+        "arousal_coarse": {
+          "$ref": "#/$defs/track"
+        },
+        "valence_coarse": {
+          "$ref": "#/$defs/track"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "track": {
+      "type": "object",
+      "required": [
+        "model_path",
+        "feature_names_path"
+      ],
+      "properties": {
+        "model_path": {
+          "type": "string"
+        },
+        "feature_names_path": {
+          "type": "string"
+        },
+        "classifier_kind": {
+          "type": "string"
+        },
+        "feature_profile": {
+          "type": "string"
+        },
+        "modality_group": {
+          "type": "string"
+        },
+        "policy_scope": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

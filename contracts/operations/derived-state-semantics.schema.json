@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go.local/contracts/operations/derived-state-semantics.schema.json",
+  "title": "Derived State Semantics Contract",
+  "description": "Canonical semantic layer output contract for K5.1 (activity/arousal/scoped valence -> derived_state).",
+  "type": "object",
+  "required": [
+    "direct_outputs",
+    "derived_state",
+    "claim_level",
+    "fallback_reason",
+    "confidence"
+  ],
+  "properties": {
+    "direct_outputs": {
+      "type": "object",
+      "required": [
+        "activity_class",
+        "arousal_coarse",
+        "valence_coarse"
+      ],
+      "properties": {
+        "activity_class": {
+          "$ref": "#/$defs/activityClass"
+        },
+        "arousal_coarse": {
+          "$ref": "#/$defs/arousalCoarse"
+        },
+        "valence_coarse": {
+          "$ref": "#/$defs/valenceCoarse"
+        }
+      },
+      "additionalProperties": false
+    },
+    "derived_state": {
+      "$ref": "#/$defs/derivedState"
+    },
+    "claim_level": {
+      "$ref": "#/$defs/claimLevel"
+    },
+    "fallback_reason": {
+      "$ref": "#/$defs/fallbackReason"
+    },
+    "confidence": {
+      "type": "object",
+      "required": [
+        "score",
+        "band"
+      ],
+      "properties": {
+        "score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "band": {
+          "type": "string",
+          "enum": [
+            "high",
+            "medium",
+            "low",
+            "insufficient"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "activityClass": {
+      "type": "string",
+      "enum": [
+        "rest",
+        "recovery",
+        "movement",
+        "physical_load",
+        "cognitive",
+        "mixed",
+        "unknown"
+      ]
+    },
+    "arousalCoarse": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+      ]
+    },
+    "valenceCoarse": {
+      "type": "string",
+      "enum": [
+        "negative",
+        "neutral",
+        "positive",
+        "unknown"
+      ]
+    },
+    "derivedState": {
+      "type": "string",
+      "enum": [
+        "calm_rest",
+        "active_movement",
+        "physical_load",
+        "possible_stress",
+        "positive_activation",
+        "negative_activation",
+        "uncertain_state"
+      ]
+    },
+    "claimLevel": {
+      "type": "string",
+      "enum": [
+        "safe",
+        "guarded",
+        "internal_only",
+        "no_claim"
+      ]
+    },
+    "fallbackReason": {
+      "type": "string",
+      "enum": [
+        "none",
+        "insufficient_signal",
+        "low_confidence",
+        "unknown_activity",
+        "unknown_arousal",
+        "contradictory_signals",
+        "valence_policy_disabled",
+        "valence_context_blocked",
+        "valence_auto_disabled",
+        "valence_low_confidence"
+      ]
+    }
+  }
+}

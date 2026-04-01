@@ -586,6 +586,20 @@ class IngestRepository:
             )
             return cur.fetchall()
 
+    def list_artifacts(self, session_id: str) -> list[dict[str, Any]]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT artifact_id, artifact_path, artifact_role, object_key, byte_size,
+                       checksum_sha256, upload_status
+                FROM ingest.ingest_artifacts
+                WHERE session_id = %s
+                ORDER BY artifact_path
+                """,
+                (session_id,),
+            )
+            return cur.fetchall()
+
     def mark_artifact_verified(self, session_id: str, artifact_path: str) -> None:
         with self._conn.cursor() as cur:
             cur.execute(

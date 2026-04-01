@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://on-go/contracts/personalization/user-profile.schema.json",
+  "title": "OnGo User Personalization Profile",
+  "description": "Canonical user profile for personalization experiments (H1-H3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_version",
+    "subject_id",
+    "created_at_utc",
+    "updated_at_utc",
+    "data_provenance",
+    "calibration_budget",
+    "physiology_baseline",
+    "behavioral_baseline",
+    "quality_summary",
+    "adaptation_state"
+  ],
+  "properties": {
+    "profile_version": {
+      "type": "string",
+      "const": "h1-v1"
+    },
+    "subject_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "data_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_ids",
+        "dataset_versions",
+        "split_policy",
+        "split_manifest_version",
+        "preprocessing_version",
+        "label_spec_version",
+        "evaluation_protocol_version"
+      ],
+      "properties": {
+        "dataset_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "dataset_versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "split_policy": {
+          "type": "string",
+          "enum": [
+            "subject-wise",
+            "loso",
+            "group-kfold"
+          ]
+        },
+        "split_manifest_version": {
+          "type": "string"
+        },
+        "preprocessing_version": {
+          "type": "string"
+        },
+        "label_spec_version": {
+          "type": "string"
+        },
+        "evaluation_protocol_version": {
+          "type": "string"
+        }
+      }
+    },
+    "calibration_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_sessions",
+        "max_segments",
+        "max_minutes",
+        "min_confidence",
+        "allowed_sources"
+      ],
+      "properties": {
+        "max_sessions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_segments": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_minutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "allowed_sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "participant_self_report",
+              "protocol",
+              "operator_review"
+            ]
+          }
+        }
+      }
+    },
+    "physiology_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resting_hr_bpm",
+        "hrv_rmssd_ms",
+        "hrv_sdnn_ms",
+        "resp_rate_bpm",
+        "eda_scl_uS"
+      ],
+      "properties": {
+        "resting_hr_bpm": {
+          "$ref": "#/$defs/range_stat"
+        },
+        "hrv_rmssd_ms": {
+          "$ref": "#/$defs/range_stat"
+        },
+        "hrv_sdnn_ms": {
+          "$ref": "#/$defs/range_stat"
+        },
+        "resp_rate_bpm": {
+          "$ref": "#/$defs/range_stat"
+        },
+        "eda_scl_uS": {
+          "$ref": "#/$defs/range_stat"
+        }
+      }
+    },
+    "behavioral_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "daily_activity_mix",
+        "motion_intensity_g",
+        "typical_sleep_window"
+      ],
+      "properties": {
+        "daily_activity_mix": {
+          "type": "object",
+          "description": "Fractions over canonical activity labels; should sum close to 1.0.",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "motion_intensity_g": {
+          "$ref": "#/$defs/range_stat"
+        },
+        "typical_sleep_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_local",
+            "end_local"
+          ],
+          "properties": {
+            "start_local": {
+              "type": "string",
+              "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+            },
+            "end_local": {
+              "type": "string",
+              "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+            }
+          }
+        }
+      }
+    },
+    "quality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usable_segment_count",
+        "excluded_segment_count",
+        "exclusion_reasons"
+      ],
+      "properties": {
+        "usable_segment_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_segment_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exclusion_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "adaptation_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "global_model_reference",
+        "active_personalization_level",
+        "last_calibrated_at_utc"
+      ],
+      "properties": {
+        "global_model_reference": {
+          "type": "string"
+        },
+        "active_personalization_level": {
+          "type": "string",
+          "enum": [
+            "none",
+            "light",
+            "full"
+          ]
+        },
+        "last_calibrated_at_utc": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "range_stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "median",
+        "p10",
+        "p90",
+        "sample_count"
+      ],
+      "properties": {
+        "median": {
+          "type": "number"
+        },
+        "p10": {
+          "type": "number"
+        },
+        "p90": {
+          "type": "number"
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

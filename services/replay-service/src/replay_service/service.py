@@ -16,6 +16,7 @@ from replay_service.models import (
     ReplayStreamDescriptor,
     ReplayWindowRequest,
     ReplayWindowResponse,
+    ReplayRunOrchestrationMode,
 )
 from replay_service.repository import ReplayRepository
 from replay_service.storage import S3Storage
@@ -170,6 +171,35 @@ class ReplayService:
             events=replay_events,
             warnings=warnings,
         )
+
+    def iterate_windows(
+        self,
+        session_id: str,
+        request: ReplayWindowRequest,
+        orchestration_mode: ReplayRunOrchestrationMode,
+    ) -> tuple[list[ReplayWindowResponse], int]:
+        manifest = self.get_manifest(session_id)
+        duration_ms = manifest.duration_ms
+        current_offset_ms = request.from_offset_ms
+        windows: list[ReplayWindowResponse] = []
+
+        while current_offset_ms <= duration_ms:
+            window_request = request.model_copy(update={"from_offset_ms": current_offset_ms})
+            window = self.get_window(session_id=session_id, request=window_request)
+            windows.append(window)
+
+            if orchestration_mode == "single_window":
+                break
+
+            if window.next_offset_ms >= duration_ms:
+                break
+
+            if window.next_offset_ms <= current_offset_ms:
+                break
+
+            current_offset_ms = window.next_offset_ms
+
+        return windows, duration_ms
 
     def _load_manifest_context(
         self,

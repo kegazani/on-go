@@ -10,7 +10,8 @@
 Swift-клиент должен опираться на артефакты из этого каталога через CI/CD,
 а не на ручное копирование моделей.
 
-Текущий контракт для backend ingest-фазы:
+Текущие контракты для backend HTTP/API:
 
 - `raw-session-ingest.openapi.yaml` — API загрузки raw session package (`C1`).
 - `raw-session-replay.openapi.yaml` — API replay manifest и replay windows (`D1`).
+- `live-inference-api.openapi.yaml` — WS live inference для capture-only `stream_batch`.

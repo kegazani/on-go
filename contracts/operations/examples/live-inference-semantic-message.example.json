@@ -1,0 +1,26 @@
+{
+  "type": "inference",
+  "window_start_ms": 0,
+  "window_end_ms": 15000,
+  "activity": "walking",
+  "activity_class": "movement",
+  "arousal_coarse": "medium",
+  "valence_coarse": "unknown",
+  "valence_scoped_status": {
+    "mode": "disabled",
+    "context": "public_app",
+    "enabled_for_context": false,
+    "user_facing_claims": false,
+    "risk_notifications": false,
+    "auto_personalization_trigger": false,
+    "reason": "valence_context_blocked"
+  },
+  "derived_state": "active_movement",
+  "confidence": {
+    "score": 0.78,
+    "band": "medium"
+  },
+  "fallback_reason": "valence_context_blocked",
+  "claim_level": "safe",
+  "feature_count": 25
+}

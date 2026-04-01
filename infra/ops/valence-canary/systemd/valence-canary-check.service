@@ -1,0 +1,9 @@
+[Unit]
+Description=On-Go valence canary periodic check
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/Users/kgz/Desktop/p/on-go
+ExecStart=/usr/bin/python3 /Users/kgz/Desktop/p/on-go/scripts/ml/valence_e2_13_canary_hardening.py --check-interval-minutes 60
+ExecStartPost=/usr/bin/python3 /Users/kgz/Desktop/p/on-go/scripts/ml/valence_e2_15_scheduler_dashboard.py

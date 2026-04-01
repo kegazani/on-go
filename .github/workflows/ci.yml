@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contract-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install schema validator
+        run: |
+          python -m pip install --quiet jsonschema
+
+      - name: Validate valence canary dashboard snapshot schema
+        run: |
+          python scripts/contracts/validate_valence_canary_snapshot.py
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - ingest-api
+          - replay-service
+          - signal-processing-worker
+          - dataset-registry
+          - modeling-baselines
+          - inference-api
+          - personalization-worker
+          - live-inference-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ${{ matrix.service }}
+        run: |
+          cd services/${{ matrix.service }}
+          pip install -e ".[dev]" -q
+
+      - name: Run ${{ matrix.service }} unit tests
+        run: |
+          cd services/${{ matrix.service }}
+          if [ "${{ matrix.service }}" = "replay-service" ]; then
+            python -m pytest tests/ -v --ignore=tests/test_integration_stack.py --ignore=tests/test_streaming_stack.py -x
+          else
+            python -m pytest tests/ -v -x
+          fi
+
+  stack-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start stack
+        run: |
+          docker compose -f infra/compose/on-go-stack.yml up -d --build
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            curl -sf http://localhost:8080/health && curl -sf http://localhost:8090/health && break
+            sleep 3
+          done
+
+      - name: Install replay-service
+        run: |
+          cd services/replay-service
+          pip install -e ".[dev]" -q
+
+      - name: Run replay integration tests
+        env:
+          INGEST_BASE_URL: http://localhost:8080
+          REPLAY_BASE_URL: http://localhost:8090
+          STACK_E2E_TIMEOUT_SECONDS: "60"
+        run: |
+          cd services/replay-service
+          python -m pytest tests/test_integration_stack.py tests/test_streaming_stack.py -v -x

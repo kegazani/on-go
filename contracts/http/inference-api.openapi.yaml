@@ -1,0 +1,271 @@
+openapi: 3.1.0
+info:
+  title: On-Go Inference API
+  version: 0.1.0
+  description: |
+    Online inference для предсказаний activity/arousal по feature vector.
+    Включает scoped policy status для valence (E2.11) и canary auto-disable state (E2.13).
+    K5.2 добавляет canonical semantic response fields для derived-state layer.
+servers:
+  - url: https://api.on-go.local
+tags:
+  - name: Inference
+    description: Предсказания по признакам
+paths:
+  /health:
+    get:
+      tags: [Inference]
+      operationId: health
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  model_loaded:
+                    type: string
+                    example: "true"
+                  valence_policy_loaded:
+                    type: string
+                    example: "true"
+                  valence_canary_state_loaded:
+                    type: string
+                    example: "true"
+                  valence_dashboard_snapshot_loaded:
+                    type: string
+                    example: "true"
+                  valence_dashboard_fresh:
+                    type: string
+                    example: "true"
+                  valence_mode:
+                    type: string
+                    example: internal_scoped
+                  valence_auto_disable:
+                    type: string
+                    example: "false"
+  /v1/predict:
+    post:
+      tags: [Inference]
+      operationId: predict
+      summary: Предсказание direct outputs и semantic derived state по feature vector
+      parameters:
+        - in: header
+          name: X-On-Go-Context
+          required: false
+          schema:
+            type: string
+            example: research_only
+          description: Контекст запроса для проверки scoped valence policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictRequest'
+      responses:
+        '200':
+          description: Предсказания
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictResponse'
+        '400':
+          description: Неверный запрос
+        '422':
+          description: Validation error
+        '503':
+          description: Model not loaded
+  /v1/policy/valence-scoped:
+    get:
+      tags: [Inference]
+      operationId: valenceScopedPolicy
+      summary: Текущая scoped policy для valence
+      responses:
+        '200':
+          description: Policy snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValenceScopedPolicyResponse'
+  /v1/monitoring/valence-canary:
+    get:
+      tags: [Inference]
+      operationId: valenceCanaryDashboard
+      summary: Dashboard snapshot scoped valence canary
+      responses:
+        '200':
+          description: Dashboard snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValenceCanaryDashboardResponse'
+components:
+  schemas:
+    PredictRequest:
+      type: object
+      required: [feature_vector]
+      properties:
+        feature_vector:
+          type: object
+          additionalProperties:
+            type: number
+          description: Feature name -> value mapping
+    ValenceScopedStatus:
+      type: object
+      required:
+        - mode
+        - context
+        - enabled_for_context
+        - user_facing_claims
+        - risk_notifications
+        - auto_personalization_trigger
+        - reason
+      properties:
+        mode:
+          type: string
+          enum: [disabled, internal_scoped, limited_production]
+        context:
+          type: string
+        enabled_for_context:
+          type: boolean
+        user_facing_claims:
+          type: boolean
+        risk_notifications:
+          type: boolean
+        auto_personalization_trigger:
+          type: boolean
+        reason:
+          type: string
+    PredictResponse:
+      type: object
+      required:
+        - activity
+        - activity_class
+        - arousal_coarse
+        - valence_coarse
+        - valence_scoped_status
+        - derived_state
+        - confidence
+        - fallback_reason
+        - claim_level
+      properties:
+        activity:
+          type: string
+          description: Predicted activity label
+          deprecated: true
+        activity_class:
+          $ref: '#/components/schemas/ActivityClass'
+        arousal_coarse:
+          $ref: '#/components/schemas/ArousalCoarse'
+        valence_coarse:
+          $ref: '#/components/schemas/ValenceCoarse'
+        valence_scoped_status:
+          $ref: '#/components/schemas/ValenceScopedStatus'
+        derived_state:
+          $ref: '#/components/schemas/DerivedState'
+        confidence:
+          $ref: '#/components/schemas/SemanticConfidence'
+        fallback_reason:
+          $ref: '#/components/schemas/FallbackReason'
+        claim_level:
+          $ref: '#/components/schemas/ClaimLevel'
+    ValenceScopedPolicyResponse:
+      type: object
+      required: [loaded, mode, effective_mode, policy_id, allowed_contexts, classifier_kind, confidence_threshold, auto_disable, alerts]
+      properties:
+        loaded:
+          type: boolean
+        mode:
+          type: string
+          enum: [disabled, internal_scoped, limited_production]
+        effective_mode:
+          type: string
+          enum: [disabled, internal_scoped, limited_production]
+        policy_id:
+          type: string
+        allowed_contexts:
+          type: array
+          items:
+            type: string
+        classifier_kind:
+          type: string
+        confidence_threshold:
+          type: number
+        auto_disable:
+          type: boolean
+        latest_check_utc:
+          type: string
+          nullable: true
+        alerts:
+          type: array
+          items:
+            type: string
+    ValenceCanaryDashboardResponse:
+      type: object
+      required: [loaded, freshness_slo_minutes, is_fresh, snapshot]
+      properties:
+        loaded:
+          type: boolean
+        freshness_slo_minutes:
+          type: integer
+        is_fresh:
+          type: boolean
+        snapshot:
+          type: object
+          additionalProperties: true
+    ActivityClass:
+      type: string
+      enum: [rest, recovery, movement, physical_load, cognitive, mixed, unknown]
+    ArousalCoarse:
+      type: string
+      enum: [low, medium, high, unknown]
+    ValenceCoarse:
+      type: string
+      enum: [negative, neutral, positive, unknown]
+    DerivedState:
+      type: string
+      enum:
+        [
+          calm_rest,
+          active_movement,
+          physical_load,
+          possible_stress,
+          positive_activation,
+          negative_activation,
+          uncertain_state
+        ]
+    ClaimLevel:
+      type: string
+      enum: [safe, guarded, internal_only, no_claim]
+    FallbackReason:
+      type: string
+      enum:
+        [
+          none,
+          insufficient_signal,
+          low_confidence,
+          unknown_activity,
+          unknown_arousal,
+          contradictory_signals,
+          valence_policy_disabled,
+          valence_context_blocked,
+          valence_auto_disabled,
+          valence_low_confidence
+        ]
+    SemanticConfidence:
+      type: object
+      required: [score, band]
+      properties:
+        score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+        band:
+          type: string
+          enum: [high, medium, low, insufficient]

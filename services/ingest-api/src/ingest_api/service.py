@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import re
 from typing import Any
 
 from ingest_api.db import Database
@@ -20,6 +21,8 @@ from ingest_api.models import (
 )
 from ingest_api.repository import IngestRepository
 from ingest_api.storage import S3Storage
+
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class IngestService:
@@ -274,9 +277,21 @@ class IngestService:
                 stream_manifest_ok = repo.stream_manifest_consistency_ok(session_id)
 
                 checksum_ok = False
+                checksum_policy_errors: list[str] = []
                 checksum_artifact = repo.get_artifact_by_path(session_id, request.checksum_file_path)
+                if checksum_artifact["artifact_role"] != "checksums":
+                    checksum_policy_errors.append("checksum_artifact_role_invalid")
                 if checksum_artifact["upload_status"] in {"uploaded", "verified"}:
                     checksum_ok = self._validate_artifact_checksum(checksum_artifact)
+                else:
+                    checksum_policy_errors.append("checksum_artifact_not_uploaded")
+
+                all_artifacts = repo.list_artifacts(session_id)
+                all_uploaded_or_verified = all(
+                    artifact["upload_status"] in {"uploaded", "verified"} for artifact in all_artifacts
+                )
+                if not all_uploaded_or_verified:
+                    checksum_policy_errors.append("artifacts_not_fully_uploaded")
 
                 object_integrity_errors = 0
                 for artifact in repo.list_uploaded_or_verified_artifacts(session_id):
@@ -303,6 +318,21 @@ class IngestService:
                             message="Artifact object is missing in object storage",
                         )
 
+                if checksum_ok:
+                    try:
+                        checksum_entries = self._parse_sha256sums(
+                            self._storage.read_object(checksum_artifact["object_key"])
+                        )
+                        checksum_errors = self._validate_checksum_policy(
+                            checksum_entries=checksum_entries,
+                            artifacts=all_artifacts,
+                            checksum_file_path=request.checksum_file_path,
+                            package_checksum_sha256=request.package_checksum_sha256,
+                        )
+                        checksum_policy_errors.extend(checksum_errors)
+                    except ValidationError as exc:
+                        checksum_policy_errors.append(exc.code)
+
                 error_count = 0
                 if not required_artifacts_ok:
                     error_count += len(missing_required)
@@ -310,11 +340,12 @@ class IngestService:
                     error_count += 1
                 if not checksum_ok:
                     error_count += 1
+                error_count += len(checksum_policy_errors)
                 error_count += object_integrity_errors
 
                 validation_summary = ValidationSummary(
-                    required_artifacts_ok=required_artifacts_ok and object_integrity_errors == 0,
-                    checksum_ok=checksum_ok,
+                    required_artifacts_ok=required_artifacts_ok and object_integrity_errors == 0 and all_uploaded_or_verified,
+                    checksum_ok=checksum_ok and len(checksum_policy_errors) == 0,
                     stream_manifest_ok=stream_manifest_ok,
                     warning_count=0,
                     error_count=error_count,
@@ -345,6 +376,7 @@ class IngestService:
                         "ingest_status": ingest_status,
                         "validation_summary": validation_summary.model_dump(mode="json"),
                         "missing_required_artifacts": missing_required,
+                        "checksum_policy_errors": checksum_policy_errors,
                     },
                 )
 
@@ -416,3 +448,96 @@ class IngestService:
     def _validate_artifact_checksum(self, artifact: dict[str, Any]) -> bool:
         content = self._storage.read_object(artifact["object_key"])
         return sha256(content).hexdigest() == artifact["checksum_sha256"]
+
+    @staticmethod
+    def _parse_sha256sums(content: bytes) -> dict[str, str]:
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                code="checksum_file_invalid_encoding",
+                message="Checksum file must be UTF-8 text",
+            ) from exc
+
+        result: dict[str, str] = {}
+        for line_number, raw_line in enumerate(text.splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            parts = line.split(maxsplit=1)
+            if len(parts) != 2:
+                raise ValidationError(
+                    code="checksum_file_invalid_line",
+                    message="Each checksum line must contain '<sha256> <path>'",
+                    details={"line": line_number},
+                )
+
+            checksum, artifact_path = parts[0], parts[1].strip()
+            if not SHA256_HEX_RE.fullmatch(checksum):
+                raise ValidationError(
+                    code="checksum_file_invalid_hash",
+                    message="Checksum hash must be 64 lowercase hex characters",
+                    details={"line": line_number},
+                )
+            if not artifact_path or artifact_path.startswith("/") or "\\" in artifact_path:
+                raise ValidationError(
+                    code="checksum_file_invalid_path",
+                    message="Checksum artifact path must be a relative POSIX path",
+                    details={"line": line_number},
+                )
+            if ".." in artifact_path.split("/"):
+                raise ValidationError(
+                    code="checksum_file_invalid_path",
+                    message="Checksum artifact path cannot contain '..' segments",
+                    details={"line": line_number},
+                )
+            if artifact_path in result:
+                raise ValidationError(
+                    code="checksum_file_duplicate_path",
+                    message="Checksum artifact path must be unique",
+                    details={"line": line_number, "artifact_path": artifact_path},
+                )
+
+            result[artifact_path] = checksum
+
+        return result
+
+    @staticmethod
+    def _validate_checksum_policy(
+        checksum_entries: dict[str, str],
+        artifacts: list[dict[str, Any]],
+        checksum_file_path: str,
+        package_checksum_sha256: str,
+    ) -> list[str]:
+        errors: list[str] = []
+        artifacts_by_path = {artifact["artifact_path"]: artifact for artifact in artifacts}
+
+        checksum_artifact = artifacts_by_path.get(checksum_file_path)
+        if checksum_artifact is None:
+            return ["checksum_artifact_missing"]
+
+        if checksum_artifact["checksum_sha256"] != package_checksum_sha256:
+            errors.append("package_checksum_mismatch")
+
+        expected_paths = {
+            artifact["artifact_path"]
+            for artifact in artifacts
+            if artifact["artifact_path"] != checksum_file_path and not artifact["artifact_path"].startswith("checksums/")
+        }
+        listed_paths = set(checksum_entries.keys())
+
+        if expected_paths - listed_paths:
+            errors.append("checksum_manifest_missing_paths")
+        if listed_paths - expected_paths:
+            errors.append("checksum_manifest_unexpected_paths")
+
+        for path, expected_hash in checksum_entries.items():
+            artifact = artifacts_by_path.get(path)
+            if artifact is None:
+                continue
+            if artifact["checksum_sha256"] != expected_hash:
+                errors.append("checksum_manifest_hash_mismatch")
+                break
+
+        return errors

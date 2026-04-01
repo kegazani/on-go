@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "on-go-inference-api"
+version = "0.1.0"
+description = "Online inference API for activity/arousal predictions"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.116.0,<1.0.0",
+  "joblib>=1.4.0,<2.0.0",
+  "numpy>=2.0.0,<3.0.0",
+  "pydantic>=2.0.0,<3.0.0",
+  "uvicorn>=0.30.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0,<1.0.0",
+  "pytest>=8.2.0,<9.0.0",
+]
+
+[project.scripts]
+inference-api = "inference_api.main:run"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

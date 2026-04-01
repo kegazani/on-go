@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Replay infer</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d9eff;
+      --border: #2a3544;
+      --danger: #f07178;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    h1 {
+      font-weight: 600;
+      font-size: 1.25rem;
+      margin: 0 0 0.5rem 0;
+      letter-spacing: -0.02em;
+    }
+    p.lead {
+      color: var(--muted);
+      font-size: 0.875rem;
+      margin: 0 0 1.25rem 0;
+      max-width: 42rem;
+      line-height: 1.5;
+    }
+    form {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+      gap: 0.75rem 1rem;
+      align-items: end;
+      max-width: 48rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    input {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    button {
+      background: var(--accent);
+      color: #0a0e14;
+      border: none;
+      padding: 0.55rem 1.1rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+      justify-self: start;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .error {
+      color: var(--danger);
+      font-size: 0.875rem;
+      margin: 0.5rem 0 1rem;
+      white-space: pre-wrap;
+    }
+    .wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.5rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 0.7rem;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(61, 158, 255, 0.06); }
+    .skipped { color: var(--muted); }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <h1>Replay → inference</h1>
+  <p class="lead">POST to the same host under <code>/api/</code> (proxied to live-inference-api). The <strong>session_id</strong> must exist in the ingest database (<code>ingest.raw_sessions</code>); replay reads metadata from Postgres and samples from object storage. A MinIO prefix alone is not enough if the session was never ingested.</p>
+  <form id="f">
+    <label>session_id <input name="session_id" required placeholder="uuid" autocomplete="off" /></label>
+    <label>window_ms <input name="window_ms" type="number" placeholder="15000" min="100" /></label>
+    <label>step_ms <input name="step_ms" type="number" placeholder="5000" min="100" /></label>
+    <label>context <input name="context" placeholder="public_app" /></label>
+    <button type="submit" id="go">Run</button>
+  </form>
+  <div id="err" class="error" hidden></div>
+  <div id="meta" class="meta"></div>
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>start ms</th>
+          <th>end ms</th>
+          <th>skipped</th>
+          <th>activity</th>
+          <th>arousal</th>
+          <th>derived</th>
+          <th>подпись</th>
+          <th>heart</th>
+        </tr>
+      </thead>
+      <tbody id="tb"></tbody>
+    </table>
+  </div>
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const api = (path, opts) => fetch(path, opts);
+    $("#f").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const err = $("#err");
+      const meta = $("#meta");
+      const tb = $("#tb");
+      const btn = $("#go");
+      err.hidden = true;
+      err.textContent = "";
+      tb.innerHTML = "";
+      meta.textContent = "";
+      const fd = new FormData(e.target);
+      const session_id = (fd.get("session_id") || "").trim();
+      const body = { session_id };
+      const wm = fd.get("window_ms");
+      const sm = fd.get("step_ms");
+      const ctx = (fd.get("context") || "").trim();
+      if (wm) body.window_ms = Number(wm);
+      if (sm) body.step_ms = Number(sm);
+      if (ctx) body.context = ctx;
+      btn.disabled = true;
+      try {
+        const res = await api("/api/v1/replay/infer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          err.hidden = false;
+          err.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        if (data.error) {
+          err.hidden = false;
+          err.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        const w = data.windows || [];
+        meta.textContent =
+          "session_id=" +
+          (data.session_id || "") +
+          " · duration_ms=" +
+          (data.duration_ms ?? "") +
+          " · windows=" +
+          w.length +
+          " · stream_names=" +
+          JSON.stringify(data.stream_names || []);
+        for (const row of w) {
+          const tr = document.createElement("tr");
+          if (row.skipped) tr.className = "skipped";
+          const cells = [
+            row.window_start_ms,
+            row.window_end_ms,
+            row.skipped ? String(row.skipped) : "false",
+            row.activity != null ? row.activity : (row.skip_reason || "—"),
+            row.arousal_coarse != null ? row.arousal_coarse : "—",
+            row.derived_state != null ? row.derived_state : "—",
+            row.user_display_label != null ? row.user_display_label : "—",
+            row.heart_source != null ? row.heart_source : "—",
+          ];
+          for (const c of cells) {
+            const td = document.createElement("td");
+            td.textContent = c === undefined || c === null ? "—" : String(c);
+            tr.appendChild(td);
+          }
+          tb.appendChild(tr);
+        }
+      } catch (x) {
+        err.hidden = false;
+        err.textContent = String(x);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

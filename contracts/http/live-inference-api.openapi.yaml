@@ -1,0 +1,316 @@
+openapi: 3.1.0
+info:
+  title: On-Go Live Inference API
+  version: 0.1.0
+  description: |
+    WebSocket API for real-time streaming inference.
+    Client sends sensor samples (watch_accelerometer + heart stream), server returns direct outputs
+    and semantic derived-state fields aligned with K5.2 inference contract.
+servers:
+  - url: wss://api.on-go.local
+  - url: http://localhost:8120
+tags:
+  - name: Live
+    description: Streaming inference
+paths:
+  /v1/replay/infer:
+    post:
+      tags: [Live]
+      operationId: replayInfer
+      summary: Batch inference over replay windows for an ingested session
+      description: |
+        Calls replay-service for manifest and windows, then runs the same feature extraction and models as /ws/live.
+        `session_id` is the ingest session id (MinIO prefix `raw-sessions/{session_id}/`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id]
+              properties:
+                session_id:
+                  type: string
+                window_ms:
+                  type: integer
+                  minimum: 100
+                  maximum: 600000
+                step_ms:
+                  type: integer
+                  minimum: 100
+                  maximum: 600000
+                stream_names:
+                  type: array
+                  items:
+                    type: string
+                context:
+                  type: string
+                replay_base_url:
+                  type: string
+      responses:
+        '200':
+          description: Session inference result or replay error payload
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Bad request (e.g. no replayable streams)
+        '404':
+          description: Session not found in replay metadata
+        '409':
+          description: Session not ready for replay
+        '422':
+          description: Validation error
+        '502':
+          description: Replay service transport or invalid response
+        '503':
+          description: Model bundle not loaded
+  /health:
+    get:
+      tags: [Live]
+      operationId: health
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  model_loaded:
+                    type: string
+                    example: "true"
+  /ws/live:
+    get:
+      tags: [Live]
+      operationId: ws_live
+      summary: WebSocket for live streaming inference
+      description: |
+        Client sends capture-origin stream_batch messages.
+        Canonical fusion runtime expects watch motion (`watch_accelerometer`) and heart stream
+        (`polar_hr` preferred, `watch_heart_rate` fallback).
+        Server returns inference with canonical semantic fields when window completes.
+        Replay remains a separate service; this socket accepts only live source batches.
+      x-websocket-messages:
+        client_to_server:
+          - $ref: '#/components/schemas/LiveStreamBatchMessage'
+          - $ref: '#/components/schemas/LivePingMessage'
+        server_to_client:
+          - $ref: '#/components/schemas/LiveInferenceMessage'
+          - $ref: '#/components/schemas/LivePongMessage'
+          - $ref: '#/components/schemas/LiveErrorMessage'
+      responses:
+        '101':
+          description: Switching protocols to WebSocket
+components:
+  schemas:
+    ActivityClass:
+      type: string
+      enum: [rest, recovery, movement, physical_load, cognitive, mixed, unknown]
+    ArousalCoarse:
+      type: string
+      enum: [low, medium, high, unknown]
+    ValenceCoarse:
+      type: string
+      enum: [negative, neutral, positive, unknown]
+    DerivedState:
+      type: string
+      enum:
+        [
+          calm_rest,
+          active_movement,
+          physical_load,
+          possible_stress,
+          positive_activation,
+          negative_activation,
+          uncertain_state
+        ]
+    ClaimLevel:
+      type: string
+      enum: [safe, guarded, internal_only, no_claim]
+    FallbackReason:
+      type: string
+      enum:
+        [
+          none,
+          insufficient_signal,
+          low_confidence,
+          unknown_activity,
+          unknown_arousal,
+          contradictory_signals,
+          valence_policy_disabled,
+          valence_context_blocked,
+          valence_auto_disabled,
+          valence_low_confidence
+        ]
+    SemanticConfidence:
+      type: object
+      required: [score, band]
+      properties:
+        score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+        band:
+          type: string
+          enum: [high, medium, low, insufficient]
+    ValenceScopedStatus:
+      type: object
+      required:
+        - mode
+        - context
+        - enabled_for_context
+        - user_facing_claims
+        - risk_notifications
+        - auto_personalization_trigger
+        - reason
+      properties:
+        mode:
+          type: string
+          enum: [disabled, internal_scoped, limited_production]
+        context:
+          type: string
+        enabled_for_context:
+          type: boolean
+        user_facing_claims:
+          type: boolean
+        risk_notifications:
+          type: boolean
+        auto_personalization_trigger:
+          type: boolean
+        reason:
+          type: string
+    LiveStreamSample:
+      type: object
+      required: [offset_ms, values]
+      properties:
+        offset_ms:
+          type: integer
+        values:
+          type: object
+          additionalProperties:
+            type: number
+    LiveStreamBatchMessage:
+      type: object
+      required: [type, stream_name, source_mode, samples]
+      properties:
+        type:
+          type: string
+          enum: [stream_batch]
+        stream_name:
+          type: string
+          enum:
+            [
+              watch_heart_rate,
+              watch_accelerometer,
+              polar_hr,
+              polar_rr,
+              watch_activity_context,
+              watch_hrv
+            ]
+        source_mode:
+          type: string
+          enum: [live, replay, simulated, unknown]
+          description: Runtime source marker. Only `live` is accepted by live-inference-api.
+        context:
+          type: string
+          description: Optional semantic runtime context (e.g. internal_dashboard, research_only, public_app). Does not authorize the batch.
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/LiveStreamSample'
+    LivePingMessage:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [ping]
+    LivePongMessage:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [pong]
+    LiveErrorMessage:
+      type: object
+      required: [type, code, detail]
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          enum:
+            [
+              invalid_json,
+              invalid_stream_name,
+              live_source_required,
+              heart_source_fallback_active,
+              heart_source_recovered,
+              internal_error
+            ]
+        detail:
+          type: string
+    LiveInferenceMessage:
+      type: object
+      required:
+        - type
+        - window_start_ms
+        - window_end_ms
+        - activity
+        - activity_class
+        - arousal_coarse
+        - valence_coarse
+        - user_display_label
+        - valence_scoped_status
+        - derived_state
+        - confidence
+        - fallback_reason
+        - claim_level
+        - heart_source
+        - heart_source_fallback_active
+        - feature_count
+      properties:
+        type:
+          type: string
+          enum: [inference]
+        window_start_ms:
+          type: integer
+        window_end_ms:
+          type: integer
+        activity:
+          type: string
+          deprecated: true
+        activity_class:
+          $ref: '#/components/schemas/ActivityClass'
+        arousal_coarse:
+          $ref: '#/components/schemas/ArousalCoarse'
+        valence_coarse:
+          $ref: '#/components/schemas/ValenceCoarse'
+        user_display_label:
+          type: string
+          description: Short Russian UI caption derived from activity_class, arousal, valence, derived_state (see docs/product/user-display-label-policy.md).
+        valence_scoped_status:
+          $ref: '#/components/schemas/ValenceScopedStatus'
+        derived_state:
+          $ref: '#/components/schemas/DerivedState'
+        confidence:
+          $ref: '#/components/schemas/SemanticConfidence'
+        fallback_reason:
+          $ref: '#/components/schemas/FallbackReason'
+        claim_level:
+          $ref: '#/components/schemas/ClaimLevel'
+        heart_source:
+          type: string
+          enum: [polar_hr, watch_heart_rate]
+        heart_source_fallback_active:
+          type: boolean
+        feature_count:
+          type: integer
