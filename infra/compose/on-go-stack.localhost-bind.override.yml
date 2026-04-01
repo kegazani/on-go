@@ -1,0 +1,29 @@
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5432:5432"
+  minio:
+    ports: !override
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+  redis:
+    ports: !override
+      - "127.0.0.1:6379:6379"
+  ingest-api:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+  replay-service:
+    ports: !override
+      - "127.0.0.1:8090:8090"
+  inference-api:
+    ports: !override
+      - "127.0.0.1:8100:8100"
+  live-inference-api:
+    ports: !override
+      - "127.0.0.1:8120:8120"
+  replay-infer-ui:
+    ports: !override
+      - "127.0.0.1:8121:80"
+  personalization-worker:
+    ports: !override
+      - "127.0.0.1:8110:8110"
