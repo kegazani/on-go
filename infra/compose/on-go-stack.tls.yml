@@ -3,11 +3,15 @@ services:
     image: caddy:2-alpine
     profiles:
       - tls
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost:8443}
+      SITE_DOMAIN: ${SITE_DOMAIN:-localhost}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-}
     ports:
       - "${ON_GO_CADDY_HTTP_PORT:-80}:80"
       - "${ON_GO_CADDY_HTTPS_PORT:-443}:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ON_GO_CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
       - on-go-caddy-data:/data
       - on-go-caddy-config:/config
     depends_on:

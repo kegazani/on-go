@@ -1,0 +1,44 @@
+{
+	admin off
+	email {$CADDY_ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	handle /v1/replay/infer* {
+		reverse_proxy live-inference-api:8120
+	}
+	handle /api/v1/replay/infer* {
+		reverse_proxy live-inference-api:8120
+	}
+	handle /ws/* {
+		reverse_proxy live-inference-api:8120
+	}
+	handle /v1/replay/* {
+		reverse_proxy replay-service:8090
+	}
+	handle /v1/raw-sessions* {
+		reverse_proxy ingest-api:8080
+	}
+	handle /v1/profile* {
+		reverse_proxy personalization-worker:8110
+	}
+	handle /v1/predict* {
+		reverse_proxy inference-api:8100
+	}
+	handle /v1/policy* {
+		reverse_proxy inference-api:8100
+	}
+	handle /v1/monitoring* {
+		reverse_proxy inference-api:8100
+	}
+	handle /health {
+		reverse_proxy ingest-api:8080
+	}
+	handle {
+		reverse_proxy ingest-api:8080
+	}
+}
+
+s3.{$SITE_DOMAIN} {
+	reverse_proxy minio:9000
+}
