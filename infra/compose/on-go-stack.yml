@@ -101,6 +101,13 @@ services:
     ports:
       - "8090:8090"
 
+  models-volume-populate:
+    image: alpine:3.21
+    profiles:
+      - populate-models
+    volumes:
+      - ${ON_GO_MODEL_VOLUME:-on-go-models}:/models
+
   inference-api:
     build:
       context: ../..
