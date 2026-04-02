@@ -61,11 +61,9 @@ class _FakeStorage:
         self,
         object_key: str,
         content_type: str,
-        presign_endpoint_override: str | None = None,
     ) -> tuple[str, datetime, dict[str, str]]:
-        del presign_endpoint_override
         return (
-            f"http://fake-s3.local/{object_key}",
+            f"https://fake-s3.local/{object_key}",
             datetime.now(timezone.utc) + timedelta(minutes=15),
             {"Content-Type": content_type},
         )

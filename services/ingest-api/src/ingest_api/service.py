@@ -35,10 +35,8 @@ class IngestService:
         request: CreateRawSessionIngestRequest,
         idempotency_key: str | None,
         raw_body: bytes,
-        client_host: str | None = None,
     ) -> CreateRawSessionIngestResponse:
         operation_key = "create_raw_session"
-        presign_endpoint = f"http://{client_host}:9000" if client_host else None
 
         with self._database.connection() as conn:
             with conn.transaction():
@@ -53,7 +51,7 @@ class IngestService:
                     return CreateRawSessionIngestResponse.model_validate(cached)
 
                 session_row, artifacts = repo.create_ingest_session(request)
-                upload_targets = self._build_upload_targets(artifacts, presign_endpoint=presign_endpoint)
+                upload_targets = self._build_upload_targets(artifacts)
 
                 response = CreateRawSessionIngestResponse(
                     session_id=session_row["session_id"],
@@ -399,18 +397,13 @@ class IngestService:
 
         return response
 
-    def _build_upload_targets(
-        self, artifacts: list[dict[str, Any]], presign_endpoint: str | None = None
-    ) -> list[ArtifactUploadTarget]:
-        return [self._build_upload_target(artifact, presign_endpoint) for artifact in artifacts]
+    def _build_upload_targets(self, artifacts: list[dict[str, Any]]) -> list[ArtifactUploadTarget]:
+        return [self._build_upload_target(artifact) for artifact in artifacts]
 
-    def _build_upload_target(
-        self, artifact: dict[str, Any], presign_endpoint: str | None = None
-    ) -> ArtifactUploadTarget:
+    def _build_upload_target(self, artifact: dict[str, Any]) -> ArtifactUploadTarget:
         upload_url, expires_at, required_headers = self._storage.create_put_target(
             object_key=artifact["object_key"],
             content_type=artifact["content_type"],
-            presign_endpoint_override=presign_endpoint,
         )
         return ArtifactUploadTarget(
             artifact_id=str(artifact["artifact_id"]),

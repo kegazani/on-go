@@ -99,11 +99,14 @@ sudo nginx -t && sudo systemctl reload nginx
 
 Configs live in [infra/nginx-host/bootstrap-http.conf](../../infra/nginx-host/bootstrap-http.conf) and [infra/nginx-host/on-go.conf](../../infra/nginx-host/on-go.conf). Certbot’s timer renews certificates; after renewal, run `sudo systemctl reload nginx` (hook or cron).
 
-5. In `.env` for `ingest-api`, set presigned URLs to the public S3 host:
+5. In `.env` for `ingest-api`, set presigned URLs to the public S3 host (same origin the phone uses for `PUT`; must match TLS hostname and signing):
 
 ```bash
 INGEST_S3_PRESIGN_ENDPOINT_URL=https://s3.kegazani.ru
+INGEST_S3_PRESIGN_REQUIRE_HTTPS=true
 ```
+
+`INGEST_S3_PRESIGN_REQUIRE_HTTPS` makes the API refuse to start unless the presign base URL is set and uses `https://`, so clients never receive `http://` upload targets.
 
 6. Mobile app: `ON_GO_INGEST_BASE_URL=https://api.kegazani.ru`.
 
@@ -113,9 +116,10 @@ INGEST_S3_PRESIGN_ENDPOINT_URL=https://s3.kegazani.ru
 
 ```bash
 INGEST_S3_PRESIGN_ENDPOINT_URL=https://s3.example.com
+INGEST_S3_PRESIGN_REQUIRE_HTTPS=true
 ```
 
-Use the same host you expose for MinIO (direct port `9000` or the `s3.*` site in Caddy).
+Use the same host you expose for MinIO (reverse proxy TLS on `s3.*`, not an internal Docker hostname or raw `:9000` URL unless that endpoint is HTTPS and reachable from the device).
 
 ## Batch preprocessing
 

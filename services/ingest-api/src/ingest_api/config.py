@@ -18,6 +18,7 @@ class Settings:
     s3_secret_access_key: str
     s3_force_path_style: bool
     s3_presign_ttl_seconds: int
+    s3_presign_require_https: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -38,4 +39,6 @@ class Settings:
             s3_secret_access_key=getenv("INGEST_S3_SECRET_ACCESS_KEY", "minioadmin"),
             s3_force_path_style=getenv("INGEST_S3_FORCE_PATH_STYLE", "true").lower() in {"1", "true", "yes"},
             s3_presign_ttl_seconds=int(getenv("INGEST_S3_PRESIGN_TTL_SECONDS", "900")),
+            s3_presign_require_https=getenv("INGEST_S3_PRESIGN_REQUIRE_HTTPS", "").lower()
+            in {"1", "true", "yes"},
         )

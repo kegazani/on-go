@@ -37,11 +37,12 @@ class S3Storage:
             if self._presign_endpoint_url
             else self._client
         )
-        self._s3_kw = {
-            "region_name": settings.s3_region,
-            "aws_access_key_id": settings.s3_access_key_id,
-            "aws_secret_access_key": settings.s3_secret_access_key,
-        }
+        if settings.s3_presign_require_https:
+            if not self._presign_endpoint_url or not self._presign_endpoint_url.startswith("https://"):
+                raise ValueError(
+                    "INGEST_S3_PRESIGN_REQUIRE_HTTPS requires INGEST_S3_PRESIGN_ENDPOINT_URL "
+                    "with an https:// base URL"
+                )
 
     def ensure_bucket(self) -> None:
         try:
@@ -58,17 +59,9 @@ class S3Storage:
         self,
         object_key: str,
         content_type: str,
-        presign_endpoint_override: str | None = None,
     ) -> tuple[str, datetime, dict[str, str]]:
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=self._presign_ttl_seconds)
         client = self._presign_client
-        if presign_endpoint_override:
-            client = boto3.client(
-                "s3",
-                endpoint_url=presign_endpoint_override,
-                config=self._boto_config,
-                **self._s3_kw,
-            )
         url = client.generate_presigned_url(
             ClientMethod="put_object",
             Params={

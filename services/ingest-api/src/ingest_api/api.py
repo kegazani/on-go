@@ -54,13 +54,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     ) -> CreateRawSessionIngestResponse:
         raw_body = await request.body()
-        host = (request.headers.get("host") or "").split(":")[0]
-        client_host = host if host else None
         return service.create_raw_session(
             request=payload,
             idempotency_key=idempotency_key,
             raw_body=raw_body,
-            client_host=client_host,
         )
 
     @app.get("/v1/raw-sessions/{session_id}", response_model=RawSessionIngestState)
