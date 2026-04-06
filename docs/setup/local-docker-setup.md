@@ -17,14 +17,18 @@
 
 ## Модель (inference / live-inference)
 
-По умолчанию используется Docker-том `on-go-models`. Перед первым запуском либо задайте `ON_GO_MODEL_VOLUME` в `.env` на абсолютный путь к каталогу runtime bundle на хосте, либо заполните том:
+Канонический runtime bundle: путь из `infra/model-bundle.version` (сейчас `wesad/wesad-v1/m7-9-runtime-bundle-export` под `data/external/wesad/artifacts/...` после экспорта из `modeling-baselines`).
+
+Скрипт `./scripts/run-stack.sh`, если `ON_GO_MODEL_VOLUME` в `.env` не задан, сам выставляет bind-mount на этот каталог, когда в нём есть `model-bundle.manifest.json`.
+
+Иначе по умолчанию в compose используется Docker-том `on-go-models`. Его нужно заполнить:
 
 ```bash
 export ON_GO_MODEL_BUNDLE_SOURCE=/path/to/m7-9-runtime-bundle-export
 ./scripts/bootstrap-model-volume.sh
 ```
 
-Идентификатор bundle: `infra/model-bundle.version`. Рекомендуется `COMPOSE_PROJECT_NAME=on-go` в `.env` (см. `.env.example`).
+Рекомендуется `COMPOSE_PROJECT_NAME=on-go` в `.env` (см. `.env.example`).
 
 ## Запуск
 
@@ -47,6 +51,18 @@ docker compose -f infra/compose/on-go-stack.yml up --build
 ```bash
 ./scripts/run-stack.sh -d
 ```
+
+## Перезапуск без потери данных
+
+Тома Postgres, MinIO и прочие **именованные** volume в compose по умолчанию **не** удаляются. Чтобы только пересобрать образы и поднять контейнеры заново (без `docker rm -f` вручную):
+
+```bash
+./scripts/restart-stack.sh
+```
+
+Скрипт вызывает `docker compose down` **без** `--volumes`. Не используйте `down -v`, если нужно сохранить БД и объекты в MinIO.
+
+**Миграции SQL:** при каждом старте контейнера `ingest-api` выполняется `ingest-api-migrate` (см. `services/ingest-api/deploy/Dockerfile`), в том числе новые файлы из `services/ingest-api/migrations/` (персонализация и др.). Отдельный шаг для таблиц персонализации не нужен, если миграции лежат в этом каталоге.
 
 Проверка:
 

@@ -129,12 +129,16 @@ services:
       context: ../..
       dockerfile: services/live-inference-api/deploy/Dockerfile
     container_name: on-go-live-inference-api
+    depends_on:
+      - personalization-worker
     environment:
       LIVE_INFERENCE_APP_HOST: 0.0.0.0
       LIVE_INFERENCE_APP_PORT: 8120
       LIVE_INFERENCE_APP_LOG_LEVEL: info
       LIVE_INFERENCE_MODEL_DIR: /models
+      LIVE_INFERENCE_WINDOW_MS: "1000"
       REPLAY_SERVICE_BASE_URL: http://replay-service:8090
+      LIVE_INFERENCE_PERSONALIZATION_BASE_URL: http://personalization-worker:8110
     volumes:
       - ${ON_GO_MODEL_VOLUME:-on-go-models}:/models:ro
     ports:
@@ -156,10 +160,16 @@ services:
       context: ../..
       dockerfile: services/personalization-worker/deploy/Dockerfile
     container_name: on-go-personalization-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ingest-api:
+        condition: service_started
     environment:
       PERSONALIZATION_APP_HOST: 0.0.0.0
       PERSONALIZATION_APP_PORT: 8110
       PERSONALIZATION_APP_LOG_LEVEL: info
+      PERSONALIZATION_DATABASE_DSN: postgresql://on_go:on_go@postgres:5432/on_go
     ports:
       - "8110:8110"
 

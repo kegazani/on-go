@@ -51,6 +51,7 @@ ingest-api
 
 1. `migrations/0001_raw_ingest_metadata.sql`
 2. `migrations/0002_ingest_runtime_support.sql`
+3. `migrations/0003_personalization_profiles.sql`
 
 Применение:
 

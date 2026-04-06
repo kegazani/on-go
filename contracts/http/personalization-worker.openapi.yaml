@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: |
     Profile store, calibration and adaptation for personalized inference.
-    K4.
+    K4. Postgres persistence when PERSONALIZATION_DATABASE_DSN is set (schema personalization.user_profiles).
 servers:
   - url: https://api.on-go.local
 tags:
@@ -26,6 +26,13 @@ paths:
                 properties:
                   status:
                     type: string
+                    example: ok
+                  store:
+                    type: string
+                    enum: [memory, postgres]
+                  db:
+                    type: string
+                    description: ok when Postgres reachable, n/a for in-memory store, error on failure
                     example: ok
   /v1/profile/{subject_id}:
     get:
@@ -65,6 +72,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProfileResponse'
+        '422':
+          description: Validation error
+  /v1/profile/{subject_id}/l2-calibration:
+    patch:
+      tags: [Profile]
+      operationId: patch_profile_l2_calibration
+      summary: Частично обновить L2 и связанные поля adaptation_state
+      description: |
+        Сливает `output_label_maps` по дорожкам с существующим профилем; остальные поля профиля и `physiology_baseline` не меняются.
+        Удобно для клиента после калибровочной сессии без полного PUT тела профиля.
+      parameters:
+        - name: subject_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/L2CalibrationPatchBody'
+      responses:
+        '200':
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '404':
+          description: Profile not found
         '422':
           description: Validation error
 components:
@@ -108,6 +146,47 @@ components:
         active_personalization_level:
           type: string
           enum: [none, light, full]
+        last_calibrated_at_utc:
+          type: string
+          format: date-time
+          nullable: true
+        l2_calibration:
+          $ref: '#/components/schemas/L2CalibrationState'
+    L2CalibrationState:
+      type: object
+      properties:
+        version:
+          type: string
+          default: per-l2-v1
+        output_label_maps:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+        global_model_reference_match:
+          type: string
+          description: When non-empty, L2 applies only if adaptation_state.global_model_reference equals this string.
+    L2CalibrationPatchBody:
+      type: object
+      additionalProperties: false
+      properties:
+        output_label_maps:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+        version:
+          type: string
+        global_model_reference_match:
+          type: string
+          nullable: true
+        active_personalization_level:
+          type: string
+          enum: [none, light, full]
+        global_model_reference:
+          type: string
         last_calibrated_at_utc:
           type: string
           format: date-time

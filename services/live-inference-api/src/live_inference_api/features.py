@@ -112,7 +112,7 @@ def extract_watch_features(
         _add_rr_proxy_stats(features, rr_vals)
 
     if manifest_layout:
-        _add_fusion_proxy_stats(features)
+        refresh_fusion_proxy_stats(features)
 
     _add_activity_context_numeric_features(features, activity_context_samples)
     motion_levels = motion_levels_for_samples(activity_context_samples)
@@ -242,6 +242,10 @@ def _add_rr_proxy_stats(features: dict[str, float], rr_vals: list[float]) -> Non
             "polar_quality_rr_outlier_ratio": 0.0,
         }
     )
+
+
+def refresh_fusion_proxy_stats(features: dict[str, float]) -> None:
+    _add_fusion_proxy_stats(features)
 
 
 def _add_fusion_proxy_stats(features: dict[str, float]) -> None:

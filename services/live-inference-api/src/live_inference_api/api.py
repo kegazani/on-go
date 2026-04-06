@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from contextlib import asynccontextmanager
+from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from live_inference_api.activity_context_adjust import adjust_activity_label_for_context
+from live_inference_api.baseline_l1 import apply_physiology_baseline_l1
+from live_inference_api.calibration_l2 import apply_adaptation_l2
 from live_inference_api.buffer import StreamBuffer
 from live_inference_api.config import Settings
-from live_inference_api.features import extract_watch_features
+from live_inference_api.features import extract_watch_features, refresh_fusion_proxy_stats
 from live_inference_api.loader import LoadedBundle, LoadedTrack, load_model_bundle, predict
 from live_inference_api.replay_infer import run_replay_infer
 from live_inference_api.semantics import build_valence_scoped_status, derive_semantic_state
@@ -30,6 +36,7 @@ ALLOWED_STREAM_NAMES = {
 }
 ALLOWED_SOURCE_MODES = {"live"}
 DEFAULT_REQUIRED_PRIMARY_STREAMS = ("polar_hr", "watch_accelerometer")
+_STREAM_HEALTH_REASONS = frozenset({"step_backoff", "heart_stale_or_missing", "no_accelerometer_in_window"})
 
 
 class ReplayInferRequestBody(BaseModel):
@@ -43,6 +50,27 @@ class ReplayInferRequestBody(BaseModel):
 
 async def _send_error(websocket: WebSocket, code: str, detail: str) -> None:
     await websocket.send_json({"type": "error", "code": code, "detail": detail})
+
+
+async def _personalization_attachment(app: FastAPI, subject_id: str | None) -> dict[str, Any] | None:
+    base = getattr(app.state, "personalization_base_url", None)
+    client = getattr(app.state, "personalization_http", None)
+    if not base:
+        return None
+    if client is None:
+        return None
+    if not subject_id:
+        return {"subject_id": None, "profile": None}
+    url = f"{base.rstrip('/')}/v1/profile/{subject_id}"
+    try:
+        r = await client.get(url)
+        if r.status_code == 404:
+            return {"subject_id": subject_id, "profile": None}
+        r.raise_for_status()
+        return {"subject_id": subject_id, "profile": r.json()}
+    except Exception as e:
+        logger.warning("personalization profile fetch failed subject_id=%s err=%s", subject_id, e)
+        return {"subject_id": subject_id, "profile": None, "error": str(e)}
 
 
 def _normalize_source_mode(msg: dict[str, object]) -> str | None:
@@ -122,10 +150,24 @@ def _required_primary_streams(bundle: LoadedBundle | None) -> tuple[str, ...]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     global model_bundle
     cfg = settings or Settings.from_env()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        base = (cfg.personalization_base_url or "").strip()
+        app.state.personalization_base_url = base or None
+        app.state.personalization_http = None
+        if base:
+            app.state.personalization_http = httpx.AsyncClient(timeout=cfg.personalization_timeout_s)
+        yield
+        client = getattr(app.state, "personalization_http", None)
+        if client is not None:
+            await client.aclose()
+
     app = FastAPI(
         title="On-Go Live Inference API",
         version="0.1.0",
         description="WebSocket API for real-time streaming inference from sensor samples.",
+        lifespan=lifespan,
     )
 
     if cfg.model_dir and cfg.model_dir.exists():
@@ -172,12 +214,195 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             window_size_ms=cfg.window_size_ms,
             step_size_ms=cfg.step_size_ms,
             max_heart_staleness_ms=cfg.heart_staleness_ms,
+            final_heart_staleness_ms=cfg.final_heart_staleness_ms,
         )
         context = "public_app"
+        subject_id_state: str | None = None
         last_heart_source: str | None = None
         last_prediction_snapshot: dict[str, object] | None = None
         seen_streams: set[str] = set()
         primary_policy_fallback_notified = False
+        health_last_mono = 0.0
+        health_last_reason = ""
+
+        async def dispatch_window_result(
+            result: tuple[int, int, str, list, list, list, list],
+            *,
+            session_final: bool = False,
+            active_subject_id: str | None = None,
+        ) -> bool:
+            nonlocal last_heart_source, last_prediction_snapshot, primary_policy_fallback_notified
+            window_start, window_end, heart_source, acc_w, hr_w, rr_w, act_ctx_w = result
+            if model_bundle is None:
+                return False
+            try:
+                pers = await _personalization_attachment(websocket.app, active_subject_id)
+                l1_meta: dict[str, object] = {"applied": False}
+                required_primary_streams = _required_primary_streams(model_bundle)
+                missing_primary_streams = [
+                    stream for stream in required_primary_streams if stream not in seen_streams
+                ]
+                if missing_primary_streams:
+                    if not primary_policy_fallback_notified:
+                        logger.warning(
+                            "polar_primary_policy fallback active; missing streams: %s",
+                            ",".join(missing_primary_streams),
+                        )
+                        await _send_error(
+                            websocket,
+                            "polar_primary_policy_fallback",
+                            "missing required primary streams: "
+                            + ",".join(missing_primary_streams)
+                            + "; using fallback heart source policy",
+                        )
+                        primary_policy_fallback_notified = True
+                if heart_source != last_heart_source:
+                    if heart_source == "watch_heart_rate":
+                        logger.warning("polar_hr unavailable, fallback to watch_heart_rate")
+                        await _send_error(
+                            websocket,
+                            "heart_source_fallback_active",
+                            "polar_hr unavailable; using watch_heart_rate as fallback heart source",
+                        )
+                    elif heart_source == "polar_hr" and last_heart_source == "watch_heart_rate":
+                        logger.info("polar_hr recovered, fallback disabled")
+                        await _send_error(
+                            websocket,
+                            "heart_source_recovered",
+                            "polar_hr recovered; heart source switched back from watch_heart_rate",
+                        )
+                    last_heart_source = heart_source
+                acc_vals = [v for _, v in acc_w]
+                hr_vals = [v for _, v in hr_w]
+                features = extract_watch_features(
+                    acc_vals,
+                    hr_vals,
+                    [v for _, v in rr_w],
+                    (window_end - window_start) / 1000.0,
+                    len(acc_w) + len(hr_w) + len(rr_w),
+                    heart_source=heart_source,
+                    manifest_layout=model_bundle.uses_manifest,
+                    activity_context_samples=[v for _, v in act_ctx_w],
+                )
+                prof = pers.get("profile") if isinstance(pers, dict) else None
+                if isinstance(prof, dict):
+                    pb = prof.get("physiology_baseline")
+                    if isinstance(pb, dict) and pb:
+                        features, l1_detail = apply_physiology_baseline_l1(features, pb)
+                        l1_meta = l1_detail
+                if model_bundle.uses_manifest:
+                    refresh_fusion_proxy_stats(features)
+                pred_raw = predict(model_bundle, features)
+                pred: dict[str, str] = {
+                    "activity": str(pred_raw.get("activity", "")),
+                    "arousal_coarse": str(pred_raw.get("arousal_coarse", "")),
+                    "valence_coarse": str(pred_raw.get("valence_coarse", "")),
+                }
+                l2_meta: dict[str, object] = {"applied": False}
+                adapt: dict[str, object] | None = None
+                if isinstance(prof, dict):
+                    a = prof.get("adaptation_state")
+                    if isinstance(a, dict):
+                        adapt = a
+                if adapt is not None:
+                    pred, l2_detail = apply_adaptation_l2(pred, adapt)
+                    l2_meta = l2_detail
+                act_ctx_vals = [v for _, v in act_ctx_w]
+                activity_for_semantics = adjust_activity_label_for_context(
+                    pred.get("activity", ""),
+                    act_ctx_vals,
+                )
+                valence_scoped_status = build_valence_scoped_status(
+                    context=context,
+                    has_valence_model=model_bundle.valence_coarse is not None,
+                )
+                feature_names = _bundle_feature_names(model_bundle)
+                feature_count_nonzero = sum(1 for name in feature_names if features.get(name, 0.0) != 0.0)
+                feature_count_legacy = sum(1 for value in features.values() if value != 0.0)
+                semantic = derive_semantic_state(
+                    activity_label=activity_for_semantics,
+                    arousal_label=pred.get("arousal_coarse", ""),
+                    valence_label=pred.get("valence_coarse", ""),
+                    valence_status=valence_scoped_status,
+                )
+                user_display_label = compute_user_display_label(
+                    activity_class=str(semantic["activity_class"]),
+                    arousal_coarse=str(semantic["arousal_coarse"]),
+                    valence_coarse=str(semantic["valence_coarse"]),
+                    derived_state=str(semantic["derived_state"]),
+                )
+                response: dict[str, object] = {
+                    "type": "inference",
+                    "window_start_ms": window_start,
+                    "window_end_ms": window_end,
+                    "activity": activity_for_semantics,
+                    "activity_class": semantic["activity_class"],
+                    "arousal_coarse": semantic["arousal_coarse"],
+                    "valence_coarse": semantic["valence_coarse"],
+                    "user_display_label": user_display_label,
+                    "valence_scoped_status": valence_scoped_status,
+                    "derived_state": semantic["derived_state"],
+                    "confidence": semantic["confidence"],
+                    "fallback_reason": semantic["fallback_reason"],
+                    "claim_level": semantic["claim_level"],
+                    "heart_source": heart_source,
+                    "heart_source_fallback_active": heart_source != "polar_hr",
+                    "feature_count_total": len(feature_names),
+                    "feature_count_nonzero": feature_count_nonzero,
+                    "feature_coverage_by_track": {
+                        "activity": _track_feature_coverage(model_bundle.activity, features),
+                        "arousal_coarse": _track_feature_coverage(model_bundle.arousal_coarse, features),
+                        **(
+                            {"valence_coarse": _track_feature_coverage(model_bundle.valence_coarse, features)}
+                            if model_bundle.valence_coarse is not None
+                            else {}
+                        ),
+                    },
+                    "feature_count": feature_count_legacy,
+                }
+                if pers is not None:
+                    response["personalization"] = dict(pers)
+                    if l1_meta.get("applied"):
+                        response["personalization"]["l1"] = l1_meta
+                    if l2_meta.get("applied"):
+                        response["personalization"]["l2"] = l2_meta
+                if session_final:
+                    response["session_final"] = True
+                pred_slice = _slice_prediction_for_log(response)
+                pred_delta = _prediction_fields_delta(last_prediction_snapshot, pred_slice)
+                last_prediction_snapshot = pred_slice
+                logger.info(
+                    "inference outbound window=%s-%s prediction_new_or_changed=%s prediction=%s",
+                    window_start,
+                    window_end,
+                    json.dumps(pred_delta, default=str),
+                    json.dumps(pred_slice, default=str),
+                )
+                await websocket.send_json(response)
+                return True
+            except Exception as e:
+                logger.exception("inference dispatch failed")
+                await _send_error(websocket, "inference_failed", str(e))
+                return False
+
+        async def maybe_stream_health(block_reason: str) -> None:
+            nonlocal health_last_mono, health_last_reason
+            if block_reason not in _STREAM_HEALTH_REASONS:
+                return
+            now = time.monotonic()
+            if block_reason == health_last_reason and now - health_last_mono < 8.0:
+                return
+            health_last_mono = now
+            health_last_reason = block_reason
+            await websocket.send_json(
+                {
+                    "type": "stream_health",
+                    "level": "warn",
+                    "code": "inference_blocked",
+                    "reason": block_reason,
+                }
+            )
+
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -203,6 +428,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         continue
                     if isinstance(msg.get("context"), str) and msg.get("context"):
                         context = str(msg.get("context"))
+                    raw_sid = msg.get("subject_id")
+                    if isinstance(raw_sid, str) and raw_sid.strip():
+                        subject_id_state = raw_sid.strip()
                     seen_streams.add(stream_name)
                     samples = msg.get("samples", [])
                     logger.info(
@@ -218,125 +446,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         if isinstance(offset, (int, float)) and isinstance(vals, dict):
                             buffer.add(stream_name, int(offset), vals)
                     result = buffer.try_emit_window()
-                    if result and model_bundle is not None:
-                        window_start, window_end, heart_source, acc_w, hr_w, rr_w, act_ctx_w = result
-                        required_primary_streams = _required_primary_streams(model_bundle)
-                        missing_primary_streams = [
-                            stream for stream in required_primary_streams if stream not in seen_streams
-                        ]
-                        if missing_primary_streams:
-                            if not primary_policy_fallback_notified:
-                                logger.warning(
-                                    "polar_primary_policy fallback active; missing streams: %s",
-                                    ",".join(missing_primary_streams),
-                                )
-                                await _send_error(
-                                    websocket,
-                                    "polar_primary_policy_fallback",
-                                    "missing required primary streams: "
-                                    + ",".join(missing_primary_streams)
-                                    + "; using fallback heart source policy",
-                                )
-                                primary_policy_fallback_notified = True
-                        if heart_source != last_heart_source:
-                            if heart_source == "watch_heart_rate":
-                                logger.warning("polar_hr unavailable, fallback to watch_heart_rate")
-                                await _send_error(
-                                    websocket,
-                                    "heart_source_fallback_active",
-                                    "polar_hr unavailable; using watch_heart_rate as fallback heart source",
-                                )
-                            elif heart_source == "polar_hr" and last_heart_source == "watch_heart_rate":
-                                logger.info("polar_hr recovered, fallback disabled")
-                                await _send_error(
-                                    websocket,
-                                    "heart_source_recovered",
-                                    "polar_hr recovered; heart source switched back from watch_heart_rate",
-                                )
-                            last_heart_source = heart_source
-                        acc_vals = [v for _, v in acc_w]
-                        hr_vals = [v for _, v in hr_w]
-                        features = extract_watch_features(
-                            acc_vals,
-                            hr_vals,
-                            [v for _, v in rr_w],
-                            (window_end - window_start) / 1000.0,
-                            len(acc_w) + len(hr_w) + len(rr_w),
-                            heart_source=heart_source,
-                            manifest_layout=model_bundle.uses_manifest,
-                            activity_context_samples=[v for _, v in act_ctx_w],
+                    if result is not None:
+                        await dispatch_window_result(result, active_subject_id=subject_id_state)
+                    elif model_bundle is not None:
+                        br = buffer.peek_emit_block_reason()
+                        if br is not None:
+                            await maybe_stream_health(br)
+                elif msg_type in ("end_session", "session_end"):
+                    had_final = False
+                    final_result = buffer.try_emit_final_window()
+                    if final_result is not None:
+                        had_final = await dispatch_window_result(
+                            final_result,
+                            session_final=True,
+                            active_subject_id=subject_id_state,
                         )
-                        pred = predict(model_bundle, features)
-                        act_ctx_vals = [v for _, v in act_ctx_w]
-                        activity_for_semantics = adjust_activity_label_for_context(
-                            str(pred.get("activity", "")),
-                            act_ctx_vals,
-                        )
-                        valence_scoped_status = build_valence_scoped_status(
-                            context=context,
-                            has_valence_model=model_bundle.valence_coarse is not None,
-                        )
-                        feature_names = _bundle_feature_names(model_bundle)
-                        feature_count_nonzero = sum(
-                            1 for name in feature_names if features.get(name, 0.0) != 0.0
-                        )
-                        feature_count_legacy = sum(1 for value in features.values() if value != 0.0)
-                        semantic = derive_semantic_state(
-                            activity_label=activity_for_semantics,
-                            arousal_label=str(pred.get("arousal_coarse", "")),
-                            valence_label=str(pred.get("valence_coarse", "")),
-                            valence_status=valence_scoped_status,
-                        )
-                        user_display_label = compute_user_display_label(
-                            activity_class=str(semantic["activity_class"]),
-                            arousal_coarse=str(semantic["arousal_coarse"]),
-                            valence_coarse=str(semantic["valence_coarse"]),
-                            derived_state=str(semantic["derived_state"]),
-                        )
-                        response = {
-                            "type": "inference",
-                            "window_start_ms": window_start,
-                            "window_end_ms": window_end,
-                            "activity": activity_for_semantics,
-                            "activity_class": semantic["activity_class"],
-                            "arousal_coarse": semantic["arousal_coarse"],
-                            "valence_coarse": semantic["valence_coarse"],
-                            "user_display_label": user_display_label,
-                            "valence_scoped_status": valence_scoped_status,
-                            "derived_state": semantic["derived_state"],
-                            "confidence": semantic["confidence"],
-                            "fallback_reason": semantic["fallback_reason"],
-                            "claim_level": semantic["claim_level"],
-                            "heart_source": heart_source,
-                            "heart_source_fallback_active": heart_source != "polar_hr",
-                            "feature_count_total": len(feature_names),
-                            "feature_count_nonzero": feature_count_nonzero,
-                            "feature_coverage_by_track": {
-                                "activity": _track_feature_coverage(model_bundle.activity, features),
-                                "arousal_coarse": _track_feature_coverage(model_bundle.arousal_coarse, features),
-                                **(
-                                    {"valence_coarse": _track_feature_coverage(model_bundle.valence_coarse, features)}
-                                    if model_bundle.valence_coarse is not None
-                                    else {}
-                                ),
-                            },
-                            "feature_count": feature_count_legacy,
+                    await websocket.send_json(
+                        {
+                            "type": "session_ended",
+                            "had_final_inference": had_final,
+                            "model_loaded": model_bundle is not None,
                         }
-                        pred_slice = _slice_prediction_for_log(response)
-                        pred_delta = _prediction_fields_delta(last_prediction_snapshot, pred_slice)
-                        last_prediction_snapshot = pred_slice
-                        logger.info(
-                            "inference outbound window=%s-%s prediction_new_or_changed=%s prediction=%s",
-                            window_start,
-                            window_end,
-                            json.dumps(pred_delta, default=str),
-                            json.dumps(pred_slice, default=str),
-                        )
-                        await websocket.send_json(response)
+                    )
+                elif msg_type == "session_reset":
+                    buffer.reset()
+                    last_heart_source = None
+                    last_prediction_snapshot = None
+                    seen_streams.clear()
+                    primary_policy_fallback_notified = False
+                    health_last_mono = 0.0
+                    health_last_reason = ""
+                    context = "public_app"
+                    subject_id_state = None
+                    await websocket.send_json({"type": "session_reset_ack"})
                 elif msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
         except WebSocketDisconnect:
-            pass
+            logger.info("ws/live disconnected")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -345,5 +491,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await _send_error(websocket, "internal_error", str(e))
             except Exception:
                 pass
+        finally:
+            logger.info("ws/live connection closed")
 
     return app

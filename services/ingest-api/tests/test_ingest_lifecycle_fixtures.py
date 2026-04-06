@@ -222,7 +222,7 @@ class _FakeIngestRepository:
             "storage_root_prefix": session["storage_root_prefix"],
             "checksum_file_path": session["checksum_file_path"],
             "package_checksum_sha256": session["package_checksum_sha256"],
-            "expected_artifact_count": counts["total"],
+            "expected_artifact_count": counts["expected"],
             "uploaded_artifact_count": counts["uploaded"],
             "verified_artifact_count": counts["verified"],
             "missing_required_artifacts": missing_required,
@@ -244,10 +244,10 @@ class _FakeIngestRepository:
         return session
 
     def assert_session_can_accept_uploads(self, session: dict[str, Any]) -> None:
-        if session["ingest_status"] not in {"uploading", "uploaded"}:
+        if session["ingest_status"] in {"validating", "ingested", "cancelled"}:
             raise ConflictError(
                 code="ingest_status_conflict",
-                message="Session cannot accept uploads in current ingest status",
+                message="Session is not accepting uploads in current status",
                 details={"ingest_status": session["ingest_status"]},
             )
 
@@ -287,18 +287,33 @@ class _FakeIngestRepository:
         artifact["storage_etag"] = storage_etag
 
     def get_artifact_counts(self, session_id: str) -> dict[str, int]:
-        rows = self._state.artifacts[session_id].values()
+        rows = list(self._state.artifacts[session_id].values())
+        expected = len(rows)
+        pending = sum(1 for row in rows if row["upload_status"] == "pending")
+        verified = sum(1 for row in rows if row["upload_status"] == "verified")
+        failed = sum(1 for row in rows if row["upload_status"] == "failed")
+        uploaded = sum(1 for row in rows if row["upload_status"] in {"uploaded", "verified"})
         return {
-            "total": len(self._state.artifacts[session_id]),
-            "pending": sum(1 for row in rows if row["upload_status"] == "pending"),
-            "uploaded": sum(1 for row in rows if row["upload_status"] == "uploaded"),
-            "verified": sum(1 for row in rows if row["upload_status"] == "verified"),
-            "failed": sum(1 for row in rows if row["upload_status"] == "failed"),
+            "expected": expected,
+            "pending": pending,
+            "uploaded": uploaded,
+            "verified": verified,
+            "failed": failed,
         }
 
     def get_missing_required_artifacts(self, session_id: str) -> list[str]:
-        roles = {row["artifact_role"] for row in self._state.artifacts[session_id].values()}
-        return sorted(self.REQUIRED_ARTIFACT_ROLES - roles)
+        ready_by_role: dict[str, int] = {}
+        for row in self._state.artifacts[session_id].values():
+            role = row["artifact_role"]
+            if role not in self.REQUIRED_ARTIFACT_ROLES:
+                continue
+            if row["upload_status"] in {"uploaded", "verified"}:
+                ready_by_role[role] = ready_by_role.get(role, 0) + 1
+        missing: list[str] = []
+        for role in sorted(self.REQUIRED_ARTIFACT_ROLES):
+            if ready_by_role.get(role, 0) == 0:
+                missing.append(role)
+        return missing
 
     def stream_manifest_consistency_ok(self, session_id: str) -> bool:
         session = self.get_session(session_id)
@@ -677,3 +692,73 @@ def test_finalize_fails_when_package_checksum_mismatch(client: TestClient) -> No
     assert body["ingest_status"] == "failed"
     assert body["validation_summary"]["checksum_ok"] is False
     assert body["validation_summary"]["error_count"] > 0
+
+
+def test_finalize_rejects_when_artifacts_still_pending(client: TestClient) -> None:
+    payload, _, checksums_sha = _build_fixture_payload(session_id="session-c4-pending-fin")
+    create_response = client.post("/v1/raw-sessions", json=payload)
+    assert create_response.status_code == 201
+    session_id = create_response.json()["session_id"]
+    finalize_response = client.post(
+        f"/v1/raw-sessions/{session_id}/finalize",
+        json={
+            "package_checksum_sha256": checksums_sha,
+            "checksum_file_path": "checksums/SHA256SUMS",
+        },
+    )
+    assert finalize_response.status_code == 422
+    err = finalize_response.json()["error"]
+    assert err["code"] == "artifacts_not_ready_for_finalize"
+    assert err["details"]["pending_artifact_count"] > 0
+
+
+def test_finalize_rejects_second_call_after_ingested_new_idempotency_key(client: TestClient) -> None:
+    payload, artifact_contents, checksums_sha = _build_fixture_payload(session_id="session-c4-dup-fin")
+    create_response = client.post(
+        "/v1/raw-sessions",
+        json=payload,
+        headers={"Idempotency-Key": "dup-fin-create"},
+    )
+    assert create_response.status_code == 201
+    create_body = create_response.json()
+    session_id = create_body["session_id"]
+    storage = _FakeStorage.last_instance
+    assert storage is not None
+    by_path = {a["artifact_path"]: a for a in payload["artifacts"]}
+    completed_artifacts: list[dict[str, Any]] = []
+    for target in create_body["upload_targets"]:
+        artifact_path = target["artifact_path"]
+        storage.put_object(target["object_key"], artifact_contents[artifact_path])
+        declared = by_path[artifact_path]
+        completed_artifacts.append(
+            {
+                "artifact_id": target["artifact_id"],
+                "artifact_path": artifact_path,
+                "byte_size": declared["byte_size"],
+                "checksum_sha256": declared["checksum_sha256"],
+            }
+        )
+    client.post(
+        f"/v1/raw-sessions/{session_id}/artifacts/presign",
+        json={"artifact_paths": ["manifest/session.json"]},
+    )
+    client.post(
+        f"/v1/raw-sessions/{session_id}/artifacts/complete",
+        json={"completed_artifacts": completed_artifacts},
+        headers={"Idempotency-Key": "dup-fin-complete"},
+    )
+    fin = {"package_checksum_sha256": checksums_sha, "checksum_file_path": "checksums/SHA256SUMS"}
+    first = client.post(
+        f"/v1/raw-sessions/{session_id}/finalize",
+        json=fin,
+        headers={"Idempotency-Key": "dup-fin-1"},
+    )
+    assert first.status_code == 200
+    assert first.json()["ingest_status"] == "ingested"
+    second = client.post(
+        f"/v1/raw-sessions/{session_id}/finalize",
+        json=fin,
+        headers={"Idempotency-Key": "dup-fin-2"},
+    )
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "session_already_finalized"

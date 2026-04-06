@@ -139,6 +139,7 @@ def test_live_stream_batch_accepts_only_live_source_mode(monkeypatch) -> None:
     assert payload["heart_source_fallback_active"] is False
     assert payload["window_start_ms"] == 0
     assert payload["window_end_ms"] == 15000
+    assert "personalization" not in payload
 
 
 def test_live_stream_batch_emits_feature_telemetry_contract(monkeypatch) -> None:
@@ -328,6 +329,274 @@ def test_live_stream_batch_rejects_non_live_source_modes(monkeypatch, source_mod
     assert payload["type"] == "error"
     assert payload["code"] == "live_source_required"
     assert payload["detail"] == f"stream_batch requires source_mode=live; got {source_mode}"
+
+
+def test_end_session_always_sends_session_ended(monkeypatch) -> None:
+    monkeypatch.setattr(api, "model_bundle", None)
+    with _open_client() as client:
+        with client.websocket_connect("/ws/live") as ws:
+            ws.send_json({"type": "end_session"})
+            payload = ws.receive_json()
+    assert payload["type"] == "session_ended"
+    assert payload["had_final_inference"] is False
+    assert payload["model_loaded"] is False
+
+
+def test_session_reset_ack(monkeypatch) -> None:
+    monkeypatch.setattr(api, "model_bundle", None)
+    with _open_client() as client:
+        with client.websocket_connect("/ws/live") as ws:
+            ws.send_json({"type": "session_reset"})
+            payload = ws.receive_json()
+    assert payload["type"] == "session_reset_ack"
+
+
+async def _fake_personalization_attachment(_app, subject_id: str | None):
+    if subject_id is None:
+        return {"subject_id": None, "profile": None}
+    return {
+        "subject_id": subject_id,
+        "profile": {"subject_id": subject_id, "physiology_baseline": {}, "adaptation_state": {}},
+    }
+
+
+def test_live_inference_merges_personalization_when_hook_returns_block(monkeypatch) -> None:
+    add_calls: list[tuple[str, int, dict[str, object]]] = []
+
+    monkeypatch.setattr(api, "model_bundle", _build_bundle())
+    monkeypatch.setattr(api, "_personalization_attachment", _fake_personalization_attachment)
+    monkeypatch.setattr(
+        api.StreamBuffer,
+        "add",
+        lambda self, stream_name, offset_ms, values: add_calls.append((stream_name, offset_ms, values)),
+    )
+
+    def emit_only_after_required_streams(_self):
+        seen = {name for name, *_ in add_calls}
+        if not {"watch_accelerometer", "polar_hr"}.issubset(seen):
+            return None
+        return (
+            0,
+            15000,
+            "polar_hr",
+            [(0, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})],
+            [(0, {"hr_bpm": 72})],
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(api.StreamBuffer, "try_emit_window", emit_only_after_required_streams)
+    monkeypatch.setattr(
+        api,
+        "predict",
+        lambda bundle, features: {
+            "activity": "baseline",
+            "arousal_coarse": "low",
+            "valence_coarse": "unknown",
+        },
+    )
+
+    with _open_client() as client:
+        with client.websocket_connect("/ws/live") as ws:
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "watch_accelerometer",
+                    "subject_id": "user-a",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0}},
+                    ],
+                }
+            )
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "polar_hr",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"hr_bpm": 72}},
+                    ],
+                }
+            )
+            payload = ws.receive_json()
+
+    assert payload["type"] == "inference"
+    assert payload["personalization"]["subject_id"] == "user-a"
+    assert payload["personalization"]["profile"]["subject_id"] == "user-a"
+    assert "l1" not in payload["personalization"]
+
+
+async def _fake_personalization_with_hr_baseline(_app, subject_id: str | None):
+    if subject_id is None:
+        return {"subject_id": None, "profile": None}
+    return {
+        "subject_id": subject_id,
+        "profile": {
+            "subject_id": subject_id,
+            "physiology_baseline": {
+                "resting_hr_bpm": {"median": 60.0, "p10": 50.0, "p90": 70.0, "sample_count": 10},
+            },
+            "adaptation_state": {},
+        },
+    }
+
+
+def test_live_inference_l1_zscores_before_predict(monkeypatch) -> None:
+    add_calls: list[tuple[str, int, dict[str, object]]] = []
+    captured: list[dict[str, float]] = []
+
+    monkeypatch.setattr(api, "model_bundle", _build_bundle())
+    monkeypatch.setattr(api, "_personalization_attachment", _fake_personalization_with_hr_baseline)
+    monkeypatch.setattr(
+        api.StreamBuffer,
+        "add",
+        lambda self, stream_name, offset_ms, values: add_calls.append((stream_name, offset_ms, values)),
+    )
+
+    def emit_only_after_required_streams(_self):
+        seen = {name for name, *_ in add_calls}
+        if not {"watch_accelerometer", "polar_hr"}.issubset(seen):
+            return None
+        return (
+            0,
+            15000,
+            "polar_hr",
+            [(0, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})],
+            [(0, {"hr_bpm": 72})],
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(api.StreamBuffer, "try_emit_window", emit_only_after_required_streams)
+
+    def predict_capture(bundle, features):
+        captured.append(dict(features))
+        return {
+            "activity": "baseline",
+            "arousal_coarse": "low",
+            "valence_coarse": "unknown",
+        }
+
+    monkeypatch.setattr(api, "predict", predict_capture)
+
+    with _open_client() as client:
+        with client.websocket_connect("/ws/live") as ws:
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "watch_accelerometer",
+                    "subject_id": "user-a",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0}},
+                    ],
+                }
+            )
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "polar_hr",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"hr_bpm": 72}},
+                    ],
+                }
+            )
+            payload = ws.receive_json()
+
+    assert payload["type"] == "inference"
+    assert payload["personalization"]["l1"]["applied"] is True
+    assert "resting_hr_bpm" in payload["personalization"]["l1"]["basis"]
+    assert len(captured) == 1
+    sigma = (70.0 - 50.0) / 2.5633312
+    assert abs(captured[0]["chest_ecg_c0__mean"] - (72.0 - 60.0) / sigma) < 1e-4
+
+
+async def _fake_personalization_l2_arousal(_app, subject_id: str | None):
+    if subject_id is None:
+        return {"subject_id": None, "profile": None}
+    return {
+        "subject_id": subject_id,
+        "profile": {
+            "subject_id": subject_id,
+            "physiology_baseline": {},
+            "adaptation_state": {
+                "active_personalization_level": "light",
+                "global_model_reference": "m7-9",
+                "l2_calibration": {
+                    "output_label_maps": {"arousal_coarse": {"low": "high"}},
+                },
+            },
+        },
+    }
+
+
+def test_live_inference_l2_remaps_after_predict(monkeypatch) -> None:
+    add_calls: list[tuple[str, int, dict[str, object]]] = []
+
+    monkeypatch.setattr(api, "model_bundle", _build_bundle())
+    monkeypatch.setattr(api, "_personalization_attachment", _fake_personalization_l2_arousal)
+    monkeypatch.setattr(
+        api.StreamBuffer,
+        "add",
+        lambda self, stream_name, offset_ms, values: add_calls.append((stream_name, offset_ms, values)),
+    )
+
+    def emit_only_after_required_streams(_self):
+        seen = {name for name, *_ in add_calls}
+        if not {"watch_accelerometer", "polar_hr"}.issubset(seen):
+            return None
+        return (
+            0,
+            15000,
+            "polar_hr",
+            [(0, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})],
+            [(0, {"hr_bpm": 72})],
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(api.StreamBuffer, "try_emit_window", emit_only_after_required_streams)
+    monkeypatch.setattr(
+        api,
+        "predict",
+        lambda bundle, features: {
+            "activity": "baseline",
+            "arousal_coarse": "low",
+            "valence_coarse": "unknown",
+        },
+    )
+
+    with _open_client() as client:
+        with client.websocket_connect("/ws/live") as ws:
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "watch_accelerometer",
+                    "subject_id": "user-l2",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0}},
+                    ],
+                }
+            )
+            ws.send_json(
+                {
+                    "type": "stream_batch",
+                    "source_mode": "live",
+                    "stream_name": "polar_hr",
+                    "samples": [
+                        {"offset_ms": 0, "values": {"hr_bpm": 72}},
+                    ],
+                }
+            )
+            payload = ws.receive_json()
+
+    assert payload["type"] == "inference"
+    assert payload["arousal_coarse"] == "high"
+    assert payload["personalization"]["l2"]["applied"] is True
+    assert payload["personalization"]["l2"]["changed"]["arousal_coarse"]["to"] == "high"
 
 
 def test_live_stream_batch_rejects_missing_source_mode(monkeypatch) -> None:

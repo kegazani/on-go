@@ -17,7 +17,7 @@
 - `replay-infer-ui` (8121)
 - `signal-processing-worker` (профиль `batch`, см. ниже)
 
-Модель: том `on-go-models` по умолчанию. Заполнение: `./scripts/bootstrap-model-volume.sh` при заданном `ON_GO_MODEL_BUNDLE_SOURCE`, либо `ON_GO_MODEL_VOLUME` в `.env` на абсолютный путь к bundle на хосте.
+Модель: том `on-go-models`, если `ON_GO_MODEL_VOLUME` не задан или в `.env` пустой — `./scripts/run-stack.sh` подставляет bind-mount на `data/.../m7-9-runtime-bundle-export`, когда там есть `model-bundle.manifest.json`. Иначе заполнение тома: `./scripts/bootstrap-model-volume.sh` и `ON_GO_MODEL_BUNDLE_SOURCE`.
 
 Запуск:
 
@@ -25,6 +25,8 @@
 cp .env.example .env
 ./scripts/run-stack.sh
 ```
+
+Перезапуск с сохранением томов: `./scripts/restart-stack.sh` (без `down -v`).
 
 TLS-прокси Caddy (профиль `tls`): задать `ON_GO_ENABLE_TLS_PROXY=1` в окружении или `.env` и использовать второй файл compose:
 

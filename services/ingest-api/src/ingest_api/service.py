@@ -256,7 +256,7 @@ class IngestService:
         with self._database.connection() as conn:
             with conn.transaction():
                 repo = IngestRepository(conn)
-                repo.get_session(session_id)
+                session = repo.get_session(session_id)
 
                 cached = self._maybe_restore_idempotent_response(
                     repo=repo,
@@ -266,6 +266,25 @@ class IngestService:
                 )
                 if cached is not None:
                     return FinalizeRawSessionResponse.model_validate(cached)
+
+                if session["ingest_status"] == "ingested":
+                    raise ConflictError(
+                        code="session_already_finalized",
+                        message="Session ingest is already finalized as ingested",
+                        details={"session_id": session_id},
+                    )
+
+                counts = repo.get_artifact_counts(session_id)
+                if counts["pending"] > 0 or counts["failed"] > 0:
+                    raise ValidationError(
+                        code="artifacts_not_ready_for_finalize",
+                        message="All artifacts must be uploaded and completed before finalize",
+                        details={
+                            "pending_artifact_count": counts["pending"],
+                            "failed_artifact_count": counts["failed"],
+                            "ingest_status": session["ingest_status"],
+                        },
+                    )
 
                 repo.set_session_ingest_status(session_id, "validating")
 

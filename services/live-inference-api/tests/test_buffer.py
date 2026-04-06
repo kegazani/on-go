@@ -64,5 +64,35 @@ def test_try_emit_window_blocks_when_heart_sample_is_too_old() -> None:
         buffer.add("watch_accelerometer", i, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})
     buffer.add("watch_heart_rate", 10000, {"hr_bpm": 65.0})
 
-    # Latest HR is older than allowed staleness for current window end.
     assert buffer.try_emit_window() is None
+    assert buffer.peek_emit_block_reason() == "heart_stale_or_missing"
+    final = buffer.try_emit_final_window()
+    assert final is not None
+    _, end, _, _, _, _, _ = final
+    assert end == 59000
+
+
+def test_try_emit_final_window_respects_explicit_final_staleness_cap() -> None:
+    buffer = StreamBuffer(
+        window_size_ms=15000,
+        step_size_ms=5000,
+        max_heart_staleness_ms=10000,
+        final_heart_staleness_ms=5000,
+    )
+    for i in range(0, 60000, 1000):
+        buffer.add("watch_accelerometer", i, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})
+    buffer.add("watch_heart_rate", 10000, {"hr_bpm": 65.0})
+    assert buffer.try_emit_final_window() is None
+
+
+def test_reset_clears_state_and_allows_reopen_emit() -> None:
+    buffer = StreamBuffer(window_size_ms=15000, step_size_ms=5000)
+    for i in range(0, 20000, 1000):
+        buffer.add("watch_accelerometer", i, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})
+        buffer.add("watch_heart_rate", i, {"hr_bpm": 65.0})
+    assert buffer.try_emit_window() is not None
+    buffer.reset()
+    for i in range(0, 20000, 1000):
+        buffer.add("watch_accelerometer", i, {"acc_x_g": 0.1, "acc_y_g": 0.0, "acc_z_g": 1.0})
+        buffer.add("watch_heart_rate", i, {"hr_bpm": 65.0})
+    assert buffer.try_emit_window() is not None
